@@ -71,6 +71,10 @@ npm run probe -- telegram   # テストメッセージが届けば OK
 npm run probe               # DexScreener 検索・トークンプール・RPC の疎通と取得件数を表示
 ```
 
+> `tsx: command not found` が出た場合は、同じコマンドをもう一度実行してください。
+> 各 npm script の先頭に `scripts/preflight.mjs` が入っており、依存パッケージの欠落を検出して
+> `npm install --include=dev` で自動復旧します。
+
 ### 3. 起動
 
 ```bash

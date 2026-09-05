@@ -569,6 +569,17 @@ NEW_LAUNCH_ENABLED=false
 
 ## 困ったときは（エラー別）
 
+### `tsx: command not found` / `vitest: command not found`
+
+部品（ライブラリ）が入っていない状態です。**もう一度同じコマンドを実行してください。**
+自動で入れ直してから処理を続けます。
+
+それでも直らないときは、次を実行してください。
+
+```
+npm install --include=dev
+```
+
 ### `npm: command not found` / `npm は認識されていません`
 
 Node.js が入っていないか、ターミナルが古い状態です。
