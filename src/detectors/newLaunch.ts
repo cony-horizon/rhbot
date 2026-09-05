@@ -1,0 +1,39 @@
+import type { Config } from "../config.js";
+import { baseMetrics, HOUR_MS, passesCommonFilters } from "./common.js";
+import type { Detection, DetectorContext } from "./types.js";
+
+/**
+ * ① 新規ローンチ検知
+ * ペア作成から NEW_MAX_AGE_HOURS 以内で、1h 出来高が段階しきい値を超えるたびに 1 回通知する。
+ */
+export function detectNewLaunch(ctx: DetectorContext, cfg: Config): Detection | null {
+  if (!cfg.newLaunchEnabled) return null;
+  const { pair, ageMs, lastAlert } = ctx;
+  if (ageMs === null || ageMs < 0) return null;
+  if (ageMs >= cfg.newMaxAgeHours * HOUR_MS) return null;
+  if (!passesCommonFilters(pair, cfg)) return null;
+
+  const m = baseMetrics(pair);
+  if (m.buysH1 < cfg.newMinBuysH1) return null;
+
+  const tiers = cfg.newVolH1TiersUsd;
+  if (tiers.length === 0) return null;
+  let reached = 0;
+  for (let i = 0; i < tiers.length; i++) {
+    const t = tiers[i];
+    if (t !== undefined && m.volH1 >= t) reached = i + 1;
+  }
+  if (reached === 0) return null;
+
+  const prevLevel = lastAlert?.level ?? 0;
+  if (reached <= prevLevel) return null;
+
+  const threshold = tiers[reached - 1] ?? 0;
+  return {
+    kind: "new_launch",
+    level: reached,
+    levelCount: tiers.length,
+    reason: `1h 出来高 $${Math.round(m.volH1).toLocaleString("en-US")} が段階 ${reached}/${tiers.length} (>= $${threshold.toLocaleString("en-US")}) に到達`,
+    metrics: m,
+  };
+}
