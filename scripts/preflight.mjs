@@ -57,16 +57,59 @@ say([
 
 // npm install --include=dev。NODE_ENV=production や npm config の production=true が
 // 設定されている環境でも開発用の部品が入るように明示する。
+// stderr は原因を判別するために手元に取り込む（取り込んだ内容はそのまま表示する）。
 const res = spawnSync("npm", ["install", "--include=dev"], {
   cwd: root,
-  stdio: "inherit",
+  stdio: ["inherit", "inherit", "pipe"],
   shell: process.platform === "win32",
+  encoding: "utf8",
   env: { ...process.env, NODE_ENV: "development" },
 });
 
 if (res.status === 0 && existsSync(tsxPath)) {
   say(["✅ 部品をそろえました。処理を続けます。"]);
   process.exit(0);
+}
+
+const stderr = res.stderr ?? "";
+if (stderr) process.stderr.write(stderr);
+
+/**
+ * npm のキャッシュが root 所有になっていると EACCES / EPERM で失敗する。
+ * 過去に sudo npm install を実行すると起きる、Mac でとくに多い状態。
+ * エラー文面からこれを判別して、他と違う対処法を出す。
+ */
+if (/EACCES|EPERM|permission denied/i.test(stderr)) {
+  const isWin = process.platform === "win32";
+  say([
+    "──────────────────────────────────────────",
+    "  ❌ 権限エラーで部品を入れられませんでした",
+    "──────────────────────────────────────────",
+    "",
+    "npm の保管フォルダが、いまのユーザーでは書き込めない状態になっています。",
+    "過去に  sudo npm install  を実行すると、こうなります。",
+    "",
+    ...(isWin
+      ? [
+          "【対処】PowerShell を「管理者として実行」で開き直してから、次を実行してください。",
+          "",
+          "  npm cache clean --force",
+          "  npm install --include=dev",
+        ]
+      : [
+          "【対処】ターミナルで次を 1 行ずつ実行してください。",
+          "",
+          "  sudo chown -R $(whoami) ~/.npm",
+          "  rm -rf node_modules",
+          "  npm install --include=dev",
+          "",
+          "1 行目で Mac のログインパスワードを聞かれます。",
+          "入力しても画面には何も表示されませんが、そのまま Enter で大丈夫です。",
+        ]),
+    "",
+    "⚠️  以後、npm に sudo を付けないでください。今回の状態の原因になります。",
+  ]);
+  process.exit(1);
 }
 
 say([

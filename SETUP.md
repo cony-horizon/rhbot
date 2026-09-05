@@ -580,6 +580,28 @@ NEW_LAUNCH_ENABLED=false
 npm install --include=dev
 ```
 
+### `EACCES: permission denied` / `npm error code EEXIST`
+
+npm の保管フォルダが `root` の持ち物になっていて、書き込めない状態です。
+過去に `sudo npm install` を実行すると、こうなります。
+
+**Mac の場合**、次を 1 行ずつ実行してください。
+
+```
+sudo chown -R $(whoami) ~/.npm
+rm -rf node_modules
+npm install --include=dev
+```
+
+1 行目で Mac のログインパスワードを聞かれます。
+入力しても画面には何も表示されませんが、そのまま `Enter` を押して大丈夫です。
+
+**Windows の場合**は、PowerShell を「管理者として実行」で開き直してから、
+`npm cache clean --force` → `npm install --include=dev` を実行します。
+
+> ⚠️ **以後 `npm` に `sudo` を付けないでください。** これがこの状態の原因です。
+> `npm install` は `sudo` なしで実行するのが正しい使い方です。
+
 ### `npm: command not found` / `npm は認識されていません`
 
 Node.js が入っていないか、ターミナルが古い状態です。
