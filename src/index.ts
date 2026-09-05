@@ -1,4 +1,4 @@
-import { loadConfig, type Config } from "./config.js";
+import { ConfigError, loadConfig, type Config } from "./config.js";
 import { DexScreenerClient } from "./dexscreener.js";
 import { Engine } from "./engine.js";
 import { escapeHtml, fmtUsd, formatAlertRow, formatPairRow } from "./format.js";
@@ -189,6 +189,12 @@ async function main(): Promise<void> {
 }
 
 main().catch((err) => {
-  log.error("致命的エラー", err);
+  if (err instanceof ConfigError) {
+    console.error(`\n⚠️  ${err.message}\n`);
+    for (const line of err.hint) console.error(line);
+    console.error("");
+  } else {
+    log.error("致命的エラー", err);
+  }
   process.exit(1);
 });

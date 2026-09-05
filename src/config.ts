@@ -1,5 +1,19 @@
 import type { LogLevel } from "./logger.js";
 
+/**
+ * 利用者が .env を直せば解決するエラー。
+ * プログラムの不具合ではないので、スタックトレースではなく対処法だけを表示する。
+ */
+export class ConfigError extends Error {
+  constructor(
+    message: string,
+    public readonly hint: string[] = [],
+  ) {
+    super(message);
+    this.name = "ConfigError";
+  }
+}
+
 export interface Config {
   telegramBotToken: string;
   telegramChatIds: string[];
@@ -58,7 +72,12 @@ function num(env: Env, key: string, def: number): number {
   const v = env[key];
   if (v === undefined || v.trim() === "") return def;
   const n = Number(v);
-  if (!Number.isFinite(n)) throw new Error(`環境変数 ${key} は数値である必要があります: "${v}"`);
+  if (!Number.isFinite(n)) {
+    throw new ConfigError(`${key} には数値を書いてください（いまは "${v}" になっています）`, [
+      `.env の ${key} の行を確認してください。単位や記号（$ , % 円）は書かず、数字だけにします。`,
+      `  正しい例: ${key}=30`,
+    ]);
+  }
   return n;
 }
 
@@ -81,7 +100,11 @@ function numList(env: Env, key: string, def: number[]): number[] {
   const raw = list(env, key, []);
   if (raw.length === 0) return def;
   const out = raw.map((s) => Number(s));
-  if (out.some((n) => !Number.isFinite(n))) throw new Error(`環境変数 ${key} は数値のカンマ区切りである必要があります`);
+  if (out.some((n) => !Number.isFinite(n))) {
+    throw new ConfigError(`${key} は数値をカンマで区切って書いてください`, [
+      `  正しい例: ${key}=25000,100000,500000`,
+    ]);
+  }
   return out.sort((a, b) => a - b);
 }
 
@@ -95,14 +118,42 @@ export function buildConfig(env: Env, strict = true): Config {
   const token = str(env, "TELEGRAM_BOT_TOKEN", "");
   const chatIds = list(env, "TELEGRAM_CHAT_ID", []);
   if (strict) {
-    if (!token) throw new Error("TELEGRAM_BOT_TOKEN が未設定です (.env を確認してください)");
-    if (chatIds.length === 0) throw new Error("TELEGRAM_CHAT_ID が未設定です (.env を確認してください)");
+    if (!token) {
+      throw new ConfigError("TELEGRAM_BOT_TOKEN が設定されていません", [
+        ".env ファイルを開いて、TELEGRAM_BOT_TOKEN= の右側にトークンを貼り付けてください。",
+        "",
+        "  例: TELEGRAM_BOT_TOKEN=1234567890:AAHdqTcvCH1vGWJxfSeofSAs0K5PALDsaw",
+        "",
+        "・トークンは Telegram の @BotFather から受け取った長い文字列です",
+        "・= の前後にスペースを入れないでください",
+        "・引用符 (\") で囲まないでください",
+        "・先頭に bot を付けないでください",
+        "",
+        ".env が見つからない場合は、まず次を実行してひな形を作ってください。",
+        "  Mac    : cp .env.example .env",
+        "  Windows: copy .env.example .env",
+      ]);
+    }
+    if (chatIds.length === 0) {
+      throw new ConfigError("TELEGRAM_CHAT_ID が設定されていません", [
+        ".env ファイルを開いて、TELEGRAM_CHAT_ID= の右側に宛先番号を貼り付けてください。",
+        "",
+        "  例: TELEGRAM_CHAT_ID=987654321",
+        "",
+        "宛先番号（chat_id）の調べ方:",
+        "  1. Telegram で自分のボットに何かメッセージを送る",
+        "  2. ブラウザで https://api.telegram.org/bot<トークン>/getUpdates を開く",
+        '  3. "chat":{"id": のすぐ後ろの数字がそれです',
+      ]);
+    }
   }
 
   const rpcUrl = str(env, "RPC_URL", "");
   const logLevel = str(env, "LOG_LEVEL", "info") as LogLevel;
   if (!["debug", "info", "warn", "error"].includes(logLevel)) {
-    throw new Error(`LOG_LEVEL が不正です: ${logLevel}`);
+    throw new ConfigError(`LOG_LEVEL の値が正しくありません: ${logLevel}`, [
+      "debug / info / warn / error のいずれかを指定してください。",
+    ]);
   }
 
   return {

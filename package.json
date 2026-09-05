@@ -8,12 +8,12 @@
     "node": ">=22.13"
   },
   "scripts": {
-    "dev": "tsx watch src/index.ts",
+    "dev": "node scripts/preflight.mjs && tsx watch src/index.ts",
     "start": "node --disable-warning=ExperimentalWarning dist/index.js",
-    "build": "tsc -p tsconfig.json",
-    "typecheck": "tsc -p tsconfig.json --noEmit",
-    "test": "vitest run",
-    "probe": "tsx src/tools/probe.ts"
+    "build": "node scripts/preflight.mjs && tsc -p tsconfig.json",
+    "typecheck": "node scripts/preflight.mjs && tsc -p tsconfig.json --noEmit",
+    "test": "node scripts/preflight.mjs && vitest run",
+    "probe": "node scripts/preflight.mjs && tsx src/tools/probe.ts"
   },
   "devDependencies": {
     "@types/node": "^22.10.0",

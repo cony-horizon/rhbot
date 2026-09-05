@@ -5,7 +5,7 @@
  *   npm run probe -- telegram … TELEGRAM_CHAT_ID へテストメッセージ送信
  *   npm run probe -- pair 0x… … 指定ペア/トークンの現在値を表示
  */
-import { loadConfig } from "../config.js";
+import { ConfigError, loadConfig } from "../config.js";
 import { DexScreenerClient, liquidityUsd, pairAgeMs, vol, type DexPair } from "../dexscreener.js";
 import { fmtAge, fmtUsd } from "../format.js";
 import { RpcClient } from "../rpc.js";
@@ -110,6 +110,12 @@ async function main(): Promise<void> {
 }
 
 main().catch((err) => {
-  console.error(err);
+  if (err instanceof ConfigError) {
+    console.error(`\n⚠️  ${err.message}\n`);
+    for (const line of err.hint) console.error(line);
+    console.error("");
+  } else {
+    console.error(err);
+  }
   process.exit(1);
 });
