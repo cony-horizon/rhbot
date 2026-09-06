@@ -2,6 +2,7 @@ import type { Config } from "./config.js";
 import { DexScreenerClient, liquidityUsd, pairAgeMs, priceUsd, vol, type DexPair } from "./dexscreener.js";
 import { detectNewLaunch } from "./detectors/newLaunch.js";
 import { detectRevival } from "./detectors/revival.js";
+import { assessScam, formatScamSummary, type ScamAssessment } from "./detectors/scam.js";
 import type { Detection } from "./detectors/types.js";
 import { baseMetrics, HOUR_MS, MINUTE_MS } from "./detectors/common.js";
 import { formatAlert } from "./format.js";
@@ -24,6 +25,8 @@ export interface EngineStats {
   lastRpcBlock: number | null;
   rpcEventsTotal: number;
   alertsSent: number;
+  /** スキャム判定で止めた通知の数 */
+  alertsSuppressed: number;
   refreshCounts: Record<Tier, number>;
   /** 対象チェーンのペアを 1 件も取得できなかった discovery の連続回数 */
   emptyDiscoveries: number;
@@ -38,6 +41,7 @@ export class Engine {
     lastRpcBlock: null,
     rpcEventsTotal: 0,
     alertsSent: 0,
+    alertsSuppressed: 0,
     refreshCounts: { hot: 0, dormant: 0, dead: 0 },
     emptyDiscoveries: 0,
     lastHealthWarningAt: null,
@@ -286,6 +290,11 @@ export class Engine {
     );
     if (rv) candidates.push(rv);
 
+    // 作られた出来高で釣る銘柄を落とす。検知そのものは残し、通知だけを止める
+    // （履歴に残しておかないと、フィルタが効きすぎていても利用者が気づけない）。
+    const scam = assessScam(p, this.cfg, now);
+    const blocked = this.cfg.scamFilterEnabled && scam.score >= this.cfg.scamScoreThreshold;
+
     for (const d of candidates) {
       this.store.insertAlert({
         kind: d.kind,
@@ -296,13 +305,22 @@ export class Engine {
         price_usd: priceUsd(p),
         symbol: p.baseToken.symbol ?? "",
         summary: d.reason,
+        scam_score: scam.score,
+        scam_reasons: scam.signals.map((sig) => sig.label).join("\n"),
+        suppressed: blocked ? 1 : 0,
       });
       out.push(d);
+
+      if (blocked) {
+        this.stats.alertsSuppressed++;
+        log.info(`FILTERED ${d.kind} $${p.baseToken.symbol} — スキャム判定 ${scam.score}/100`);
+        continue;
+      }
       if (this.isMuted()) {
         log.info(`[muted] ${d.kind} $${p.baseToken.symbol}: ${d.reason}`);
         continue;
       }
-      const html = formatAlert(d, p, age);
+      const html = formatAlert(d, p, age, scam, this.cfg.scamShowScoreFrom);
       try {
         await this.sink.broadcast(html);
         this.stats.alertsSent++;
@@ -360,8 +378,22 @@ export class Engine {
       reason: "これはテスト送信です。実際の検知条件は満たしていません",
       metrics: m,
     };
-    await this.sink.broadcast("🧪 <b>テスト送信</b> — 以下は通知の見本です\n\n" + formatAlert(detection, pair, pairAgeMs(pair, now)));
+    await this.sink.broadcast(
+      "🧪 <b>テスト送信</b> — 以下は通知の見本です\n\n" +
+        formatAlert(detection, pair, pairAgeMs(pair, now), assessScam(pair, this.cfg, now), this.cfg.scamShowScoreFrom),
+    );
     return `テスト通知を送信しました（$${pair.baseToken.symbol} の実データを使用）`;
+  }
+
+  /** 指定アドレスを現在値で採点する（/why 用） */
+  async explain(address: string): Promise<{ pair: DexPair; scam: ScamAssessment } | null> {
+    let pairs = await this.dex.getPairs(this.cfg.chainId, [address]);
+    if (pairs.length === 0) pairs = await this.dex.getTokenPools(this.cfg.chainId, address);
+    pairs = pairs.filter((x) => x.chainId === this.cfg.chainId);
+    // 同じトークンに複数プールがあるときは、いちばん流動性の厚いものを代表にする
+    const pair = pairs.sort((a, b) => liquidityUsd(b) - liquidityUsd(a))[0];
+    if (!pair) return null;
+    return { pair, scam: assessScam(pair, this.cfg, this.now()) };
   }
 
   /** 手動監視追加（ペアアドレス or トークンアドレス） */

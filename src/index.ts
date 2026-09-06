@@ -1,7 +1,7 @@
 import { ConfigError, loadConfig, type Config } from "./config.js";
 import { DexScreenerClient } from "./dexscreener.js";
 import { Engine } from "./engine.js";
-import { escapeHtml, fmtUsd, formatAlertRow, formatPairRow } from "./format.js";
+import { escapeHtml, fmtPrice, fmtUsd, formatAlertRow, formatPairRow, formatSuppressedRow } from "./format.js";
 import { log, setLogLevel } from "./logger.js";
 import { RpcClient } from "./rpc.js";
 import { every, type ScheduledTask } from "./scheduler.js";
@@ -13,6 +13,8 @@ const COMMANDS = [
   { command: "top", description: "1h 出来高上位ペア" },
   { command: "alerts", description: "直近のアラート履歴" },
   { command: "test", description: "通知の見本を送って配信を確認" },
+  { command: "filtered", description: "スキャム判定で止めた通知を見る" },
+  { command: "why", description: "指定アドレスのリスクを採点する" },
   { command: "watch", description: "アドレスを手動で監視に追加" },
   { command: "unwatch", description: "監視から外す" },
   { command: "list", description: "手動監視中のペア一覧" },
@@ -29,6 +31,8 @@ function helpText(): string {
     "🚀 新規ローンチ: 作成から一定時間内に 1h 出来高が段階しきい値を超えたら通知",
     "🔥 復活スパイク: 20h 以上経過したペアで突発的な出来高と +30% 以上の価格上昇を検知",
     "",
+    "🚫 バンドル・洗浄取引で出来高を作られた銘柄は自動で除外します（/filtered で確認）",
+    "",
     "通知が来ないときは /status で監視ペア数を、/test で配信経路を確認してください。",
     "",
     ...COMMANDS.map((c) => `/${c.command} — ${c.description}`),
@@ -43,6 +47,9 @@ function configText(cfg: Config): string {
     `<b>復活</b> ${cfg.revivalEnabled ? "ON" : "OFF"}: ${cfg.revivalMinAgeHours}h〜, 価格 +${cfg.revivalPriceChangePct}% (1h or ${cfg.revivalLookbackMin}分安値比), 1h出来高>=${fmtUsd(
       cfg.revivalMinVolH1Usd,
     )}, 突発率>=${cfg.revivalVolSpikeRatio}x, 買>=${cfg.revivalMinBuysH1}, cooldown ${cfg.revivalCooldownMin}分, 追加上昇 +${cfg.revivalEscalationPct}%`,
+    `<b>スキャム除外</b> ${cfg.scamFilterEnabled ? "ON" : "OFF"}: リスク ${cfg.scamScoreThreshold}/100 以上を通知しない`,
+    `  出来高/流動性 ${cfg.scamChurnMid}x で加点・${cfg.scamChurnHigh}x で重く加点 | 流動性/時価総額 ${cfg.scamMinDepthPct}% 未満で加点`,
+    `  流動性 ${fmtUsd(cfg.scamPumpLiquidityUsd)} 未満で +${cfg.scamPumpPct}% の急騰は加点 | 流動性 ${fmtUsd(cfg.scamMinLiquidityUsd)} 未満で加点`,
     `更新間隔: hot ${cfg.pollIntervalSec}s / dormant ${cfg.dormantPollIntervalSec}s / dead ${cfg.deadPollIntervalSec}s`,
     `RPC: ${cfg.rpcUrl ?? "無効"}`,
     "",
@@ -122,6 +129,7 @@ async function main(): Promise<void> {
             "<b>監視状況</b>",
             `ペア: hot ${tiers.hot} / dormant ${tiers.dormant} / dead ${tiers.dead} (pending ${store.countPending()})`,
             `直近 24h アラート: ${store.countAlertsSince(Date.now() - 86_400_000)} 件 (送信累計 ${s.alertsSent})`,
+            `直近 24h フィルタ: ${store.countSuppressedSince(Date.now() - 86_400_000)} 件をスキャム判定で抑制 (累計 ${s.alertsSuppressed})`,
             `最終 discovery: ${s.lastDiscoveryAt ? new Date(s.lastDiscoveryAt).toISOString() : "-"} (+${s.lastDiscoveryAdded})`,
             `RPC block: ${s.lastRpcBlock ?? "-"} / 検知イベント累計 ${s.rpcEventsTotal}`,
             `DexScreener リクエスト累計: ${dex.requestCount}`,
@@ -142,6 +150,39 @@ async function main(): Promise<void> {
         }
         case "test":
           return await engine.sendSampleAlert();
+        case "filtered": {
+          const n = Math.min(20, Number(args[0]) || 10);
+          const rows = store.recentSuppressed(n);
+          if (rows.length === 0) return "スキャム判定で止めた通知はまだありません";
+          return (
+            `<b>止めた通知 ${rows.length} 件</b>（しきい値 ${cfg.scamScoreThreshold}/100）\n` +
+            rows.map(formatSuppressedRow).join("\n") +
+            `\n\n本来ほしかった銘柄が混ざっていたら、.env の SCAM_SCORE_THRESHOLD を上げてください。`
+          );
+        }
+        case "why": {
+          const addr = args[0];
+          if (!addr || !/^0x[0-9a-fA-F]{40,64}$/.test(addr)) return "使い方: /why &lt;ペア or トークンアドレス&gt;";
+          const res = await engine.explain(addr);
+          if (!res) return `DexScreener に ${escapeHtml(addr)} のペアが見つかりませんでした (chain=${cfg.chainId})`;
+          const { pair, scam } = res;
+          const verdict =
+            scam.score >= cfg.scamScoreThreshold
+              ? `🚫 <b>通知しない</b>（しきい値 ${cfg.scamScoreThreshold} 以上）`
+              : `✅ <b>通知する</b>（しきい値 ${cfg.scamScoreThreshold} 未満）`;
+          const lines = [
+            `<b>$${escapeHtml(pair.baseToken.symbol)}</b> のリスク評価`,
+            `価格 ${fmtPrice(Number(pair.priceUsd))} | 流動性 ${fmtUsd(pair.liquidity?.usd)} | 1h 出来高 ${fmtUsd(pair.volume?.h1)}`,
+            "",
+            `リスク <b>${scam.score}/100</b>  ${verdict}`,
+          ];
+          if (scam.signals.length === 0) lines.push("", "引っかかった点はありません。");
+          else {
+            lines.push("");
+            for (const sig of scam.signals) lines.push(`・+${sig.points} ${escapeHtml(sig.label)}`);
+          }
+          return lines.join("\n");
+        }
         case "watch": {
           const addr = args[0];
           if (!addr || !/^0x[0-9a-fA-F]{40,64}$/.test(addr)) return "使い方: /watch <ペア or トークンアドレス>";

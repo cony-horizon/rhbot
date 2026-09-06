@@ -2,6 +2,10 @@ import { describe, expect, it } from "vitest";
 import type { DexPair, DexScreenerClient } from "../src/dexscreener.js";
 import { Engine } from "../src/engine.js";
 import { Store } from "../src/store.js";
+import { DatabaseSync } from "node:sqlite";
+import fs from "node:fs";
+import os from "node:os";
+import path from "node:path";
 import { H, NOW, makeConfig, makePair } from "./helpers.js";
 
 /** DexScreener をメモリ上の「現在値」で置き換えるフェイク */
@@ -279,5 +283,126 @@ describe("Engine — 自己診断", () => {
     expect(sent).toHaveLength(1);
     expect(sent[0]).toContain("配信経路は正常です");
     expect(reply).toContain("0 件");
+  });
+});
+
+describe("Engine — スキャム除外", () => {
+  /** 利用者が報告した $PUMPS 相当の、作られた出来高の銘柄 */
+  function bundled() {
+    const p = makePair({
+      symbol: "PUMPS",
+      address: "0xscampair",
+      token: "0xscamtoken",
+      ageHours: 41 / 60,
+      price: 0.0007393,
+      volH1: 798_000,
+      volH24: 798_000,
+      liq: 88_000,
+      buysH1: 878,
+      sellsH1: 326,
+      changeH1: 33_753,
+    });
+    p.fdv = 855_000;
+    p.marketCap = 855_000;
+    return p;
+  }
+
+  it("バンドル銘柄は通知せず、履歴には理由付きで残る", async () => {
+    const { dex, sent, store, engine } = setup();
+    dex.searchResults = [bundled()];
+    await engine.discover();
+
+    expect(sent).toHaveLength(0);
+    const blocked = store.recentSuppressed(10);
+    expect(blocked).toHaveLength(1);
+    expect(blocked[0]!.symbol).toBe("PUMPS");
+    expect(blocked[0]!.scam_score).toBeGreaterThanOrEqual(50);
+    expect(blocked[0]!.scam_reasons).toContain("洗浄取引");
+    // 通知した扱いにはしない
+    expect(store.recentAlerts(10)).toHaveLength(0);
+    expect(engine.stats.alertsSuppressed).toBe(1);
+  });
+
+  it("フィルタを切れば通知される", async () => {
+    const { dex, sent, engine } = setup({ SCAM_FILTER_ENABLED: "false" });
+    dex.searchResults = [bundled()];
+    await engine.discover();
+    expect(sent).toHaveLength(1);
+  });
+
+  it("しきい値を上げれば通知される", async () => {
+    const { dex, sent, engine } = setup({ SCAM_SCORE_THRESHOLD: "99" });
+    dex.searchResults = [bundled()];
+    await engine.discover();
+    expect(sent).toHaveLength(1);
+  });
+
+  it("健全な銘柄はこれまで通り通知される", async () => {
+    const { dex, sent, engine } = setup();
+    const good = makePair({ ageHours: 3, volH1: 60_000, volH24: 150_000, liq: 45_000, buysH1: 90, sellsH1: 60 });
+    good.fdv = 600_000;
+    good.marketCap = 600_000;
+    dex.searchResults = [good];
+    await engine.discover();
+    expect(sent).toHaveLength(1);
+    expect(sent[0]).toContain("新規ローンチ検知");
+  });
+
+  it("止めた銘柄はクールダウン判定に影響しない（後で健全になれば通知できる）", async () => {
+    const { dex, sent, engine, setNow } = setup();
+    dex.searchResults = [bundled()];
+    await engine.discover();
+    expect(sent).toHaveLength(0);
+
+    // 流動性が厚くなり、出来高が落ち着いた＝健全化した状態
+    const live = dex.pairs.get("0xscampair")!;
+    setNow(NOW + 30 * 60_000);
+    live.liquidity = { usd: 900_000 };
+    live.volume = { m5: 5_000, h1: 120_000, h24: 900_000 };
+    live.priceChange.h1 = 45;
+    live.fdv = 9_000_000;
+    live.marketCap = 9_000_000;
+    await engine.discover();
+    expect(sent).toHaveLength(1);
+  });
+
+  it("通知はするが気になる点があるものは、理由が本文に載る", async () => {
+    const { dex, sent, engine } = setup();
+    // リスク 12（薄めの流動性）だけ立つ銘柄。表示しきい値を 10 に下げて確認する
+    const p = makePair({ ageHours: 3, volH1: 60_000, volH24: 150_000, liq: 30_000, buysH1: 90, sellsH1: 60 });
+    p.fdv = 1_000_000;
+    p.marketCap = 1_000_000;
+    const { dex: d2, sent: s2, engine: e2 } = setup({ SCAM_SHOW_SCORE_FROM: "10" });
+    d2.searchResults = [p];
+    await e2.discover();
+    expect(s2[0]).toContain("注意点");
+    void dex;
+    void sent;
+    void engine;
+  });
+});
+
+describe("Store — 既存 DB の移行", () => {
+  it("スキャム列が無い古い alerts テーブルでも起動できる", () => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), "rhbot-migrate-"));
+    const file = path.join(dir, "old.sqlite");
+    // 旧スキーマの DB を用意する
+    const old = new DatabaseSync(file);
+    old.exec(`CREATE TABLE alerts (
+      id INTEGER PRIMARY KEY AUTOINCREMENT, kind TEXT NOT NULL, token_address TEXT NOT NULL,
+      pair_address TEXT NOT NULL, ts INTEGER NOT NULL, level INTEGER NOT NULL DEFAULT 1,
+      price_usd REAL, symbol TEXT NOT NULL DEFAULT '', summary TEXT NOT NULL DEFAULT '')`);
+    old.prepare("INSERT INTO alerts(kind, token_address, pair_address, ts, level, price_usd, symbol, summary) VALUES(?,?,?,?,?,?,?,?)")
+      .run("revival", "0xa", "0xb", NOW, 1, 0.5, "OLD", "以前の通知");
+    old.close();
+
+    // 新しいコードで開く
+    const store = new Store(file);
+    expect(store.recentAlerts(10)).toHaveLength(1);
+    expect(store.recentAlerts(10)[0]!.symbol).toBe("OLD");
+    expect(store.recentAlerts(10)[0]!.scam_score).toBe(0);
+    expect(store.recentSuppressed(10)).toHaveLength(0);
+    store.close();
+    fs.rmSync(dir, { recursive: true, force: true });
   });
 });

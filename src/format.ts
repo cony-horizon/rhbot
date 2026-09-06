@@ -1,5 +1,6 @@
 import type { DexPair } from "./dexscreener.js";
 import type { Detection } from "./detectors/types.js";
+import type { ScamAssessment } from "./detectors/scam.js";
 import type { PairRow, AlertRow } from "./store.js";
 
 export function escapeHtml(s: string): string {
@@ -45,7 +46,13 @@ function dexLabel(p: DexPair): string {
   return `${p.dexId}${labels}`;
 }
 
-export function formatAlert(d: Detection, p: DexPair, ageMs: number | null): string {
+export function formatAlert(
+  d: Detection,
+  p: DexPair,
+  ageMs: number | null,
+  scam?: ScamAssessment,
+  showScoreFrom = 20,
+): string {
   const m = d.metrics;
   const sym = escapeHtml(p.baseToken.symbol || "?");
   const name = escapeHtml(p.baseToken.name || "");
@@ -71,6 +78,12 @@ export function formatAlert(d: Detection, p: DexPair, ageMs: number | null): str
     `📈 <a href="${escapeHtml(p.url)}">DexScreener で開く</a>`,
     `CA: <code>${escapeHtml(p.baseToken.address)}</code>`,
   ];
+
+  // 通知はするが引っかかる点があるものは、判断材料として理由を添える
+  if (scam && scam.score >= showScoreFrom && scam.signals.length > 0) {
+    lines.push("", `⚠️ <b>注意点</b> (リスク ${scam.score}/100)`);
+    for (const sig of scam.signals) lines.push(`・${escapeHtml(sig.label)}`);
+  }
   return lines.join("\n");
 }
 
@@ -84,4 +97,15 @@ export function formatAlertRow(a: AlertRow): string {
   const when = new Date(a.ts).toISOString().replace("T", " ").slice(5, 16);
   const icon = a.kind === "new_launch" ? "🚀" : "🔥";
   return `${icon} ${when} <b>$${escapeHtml(a.symbol)}</b> L${a.level} ${fmtPrice(a.price_usd)} — ${escapeHtml(a.summary)}`;
+}
+
+/** 止めた通知の 1 行表示。なぜ止めたのかが分かるようにする */
+export function formatSuppressedRow(a: AlertRow): string {
+  const when = new Date(a.ts).toISOString().replace("T", " ").slice(5, 16);
+  const reasons = a.scam_reasons
+    .split("\n")
+    .filter(Boolean)
+    .map((r) => `\n    ・${escapeHtml(r)}`)
+    .join("");
+  return `🚫 ${when} <b>$${escapeHtml(a.symbol)}</b> リスク ${a.scam_score}/100${reasons}\n    <code>${escapeHtml(a.token_address)}</code>`;
 }

@@ -52,6 +52,12 @@ export interface AlertRow {
   price_usd: number | null;
   symbol: string;
   summary: string;
+  /** スキャム判定スコア (0-100) */
+  scam_score: number;
+  /** 判定理由。改行区切り */
+  scam_reasons: string;
+  /** 1 ならスコア超過で通知を止めたもの */
+  suppressed: number;
 }
 
 export interface PendingRow {
@@ -113,7 +119,10 @@ CREATE TABLE IF NOT EXISTS alerts (
   level INTEGER NOT NULL DEFAULT 1,
   price_usd REAL,
   symbol TEXT NOT NULL DEFAULT '',
-  summary TEXT NOT NULL DEFAULT ''
+  summary TEXT NOT NULL DEFAULT '',
+  scam_score INTEGER NOT NULL DEFAULT 0,
+  scam_reasons TEXT NOT NULL DEFAULT '',
+  suppressed INTEGER NOT NULL DEFAULT 0
 );
 CREATE INDEX IF NOT EXISTS idx_alerts_kind_token_ts ON alerts(kind, token_address, ts);
 CREATE TABLE IF NOT EXISTS pending_pairs (
@@ -133,6 +142,22 @@ export class Store {
     this.db.exec("PRAGMA journal_mode = WAL;");
     this.db.exec("PRAGMA synchronous = NORMAL;");
     this.db.exec(SCHEMA);
+    this.migrate();
+  }
+
+  /** 既に bot.sqlite を持っている利用者のために、後から足した列を補う */
+  private migrate(): void {
+    const cols = new Set(
+      (this.db.prepare("PRAGMA table_info(alerts)").all() as unknown as { name: string }[]).map((c) => c.name),
+    );
+    const added: [string, string][] = [
+      ["scam_score", "INTEGER NOT NULL DEFAULT 0"],
+      ["scam_reasons", "TEXT NOT NULL DEFAULT ''"],
+      ["suppressed", "INTEGER NOT NULL DEFAULT 0"],
+    ];
+    for (const [name, def] of added) {
+      if (!cols.has(name)) this.db.exec(`ALTER TABLE alerts ADD COLUMN ${name} ${def}`);
+    }
   }
 
   close(): void {
@@ -328,23 +353,48 @@ export class Store {
   lastAlert(kind: AlertKind, tokenAddress: string): AlertRow | null {
     return (
       (this.db
-        .prepare("SELECT * FROM alerts WHERE kind = ? AND token_address = ? ORDER BY ts DESC LIMIT 1")
+        .prepare("SELECT * FROM alerts WHERE kind = ? AND token_address = ? AND suppressed = 0 ORDER BY ts DESC LIMIT 1")
         .get(kind, tokenAddress.toLowerCase()) as AlertRow | undefined) ?? null
     );
   }
 
   insertAlert(a: Omit<AlertRow, "id">): void {
     this.db
-      .prepare("INSERT INTO alerts(kind, token_address, pair_address, ts, level, price_usd, symbol, summary) VALUES(?, ?, ?, ?, ?, ?, ?, ?)")
-      .run(a.kind, a.token_address.toLowerCase(), a.pair_address.toLowerCase(), a.ts, a.level, a.price_usd, a.symbol, a.summary);
+      .prepare(
+        `INSERT INTO alerts(kind, token_address, pair_address, ts, level, price_usd, symbol, summary, scam_score, scam_reasons, suppressed)
+         VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+      )
+      .run(
+        a.kind,
+        a.token_address.toLowerCase(),
+        a.pair_address.toLowerCase(),
+        a.ts,
+        a.level,
+        a.price_usd,
+        a.symbol,
+        a.summary,
+        a.scam_score,
+        a.scam_reasons,
+        a.suppressed,
+      );
   }
 
   recentAlerts(limit: number): AlertRow[] {
-    return this.db.prepare("SELECT * FROM alerts ORDER BY ts DESC LIMIT ?").all(limit) as unknown as AlertRow[];
+    return this.db.prepare("SELECT * FROM alerts WHERE suppressed = 0 ORDER BY ts DESC LIMIT ?").all(limit) as unknown as AlertRow[];
+  }
+
+  /** スキャム判定で止めたもの。フィルタが効きすぎていないか確認するために使う */
+  recentSuppressed(limit: number): AlertRow[] {
+    return this.db.prepare("SELECT * FROM alerts WHERE suppressed = 1 ORDER BY ts DESC LIMIT ?").all(limit) as unknown as AlertRow[];
+  }
+
+  countSuppressedSince(sinceTs: number): number {
+    const row = this.db.prepare("SELECT COUNT(*) AS n FROM alerts WHERE suppressed = 1 AND ts >= ?").get(sinceTs) as { n: number };
+    return row.n;
   }
 
   countAlertsSince(sinceTs: number): number {
-    const row = this.db.prepare("SELECT COUNT(*) AS n FROM alerts WHERE ts >= ?").get(sinceTs) as { n: number };
+    const row = this.db.prepare("SELECT COUNT(*) AS n FROM alerts WHERE suppressed = 0 AND ts >= ?").get(sinceTs) as { n: number };
     return row.n;
   }
 

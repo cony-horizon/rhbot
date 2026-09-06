@@ -55,6 +55,17 @@ export interface Config {
   revivalCooldownMin: number;
   revivalEscalationPct: number;
 
+  scamFilterEnabled: boolean;
+  scamScoreThreshold: number;
+  scamChurnMid: number;
+  scamChurnHigh: number;
+  scamMinDepthPct: number;
+  scamPumpPct: number;
+  scamPumpLiquidityUsd: number;
+  scamMinLiquidityUsd: number;
+  scamMinAvgTradeUsd: number;
+  scamShowScoreFrom: number;
+
   dbPath: string;
   snapshotRetentionHours: number;
   logLevel: LogLevel;
@@ -196,6 +207,17 @@ export function buildConfig(env: Env, strict = true): Config {
     revivalMinBuysH1: num(env, "REVIVAL_MIN_BUYS_H1", 10),
     revivalCooldownMin: num(env, "REVIVAL_COOLDOWN_MIN", 180),
     revivalEscalationPct: num(env, "REVIVAL_ESCALATION_PCT", 50),
+
+    scamFilterEnabled: bool(env, "SCAM_FILTER_ENABLED", true),
+    scamScoreThreshold: num(env, "SCAM_SCORE_THRESHOLD", 50),
+    scamChurnMid: num(env, "SCAM_CHURN_MID", 4),
+    scamChurnHigh: num(env, "SCAM_CHURN_HIGH", 8),
+    scamMinDepthPct: num(env, "SCAM_MIN_DEPTH_PCT", 2),
+    scamPumpPct: num(env, "SCAM_PUMP_PCT", 1000),
+    scamPumpLiquidityUsd: num(env, "SCAM_PUMP_LIQUIDITY_USD", 150_000),
+    scamMinLiquidityUsd: num(env, "SCAM_MIN_LIQUIDITY_USD", 20_000),
+    scamMinAvgTradeUsd: num(env, "SCAM_MIN_AVG_TRADE_USD", 40),
+    scamShowScoreFrom: num(env, "SCAM_SHOW_SCORE_FROM", 20),
 
     dbPath: str(env, "DB_PATH", "./data/bot.sqlite"),
     snapshotRetentionHours: num(env, "SNAPSHOT_RETENTION_HOURS", 48),
