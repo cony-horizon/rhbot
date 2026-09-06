@@ -42,49 +42,141 @@ export function fmtAge(ms: number | null): string {
 }
 
 function dexLabel(p: DexPair): string {
-  const labels = p.labels && p.labels.length > 0 ? ` (${p.labels.join(", ")})` : "";
+  const labels = p.labels && p.labels.length > 0 ? ` ${p.labels.join("/")}` : "";
   return `${p.dexId}${labels}`;
 }
 
+/** 出来高の水準を 低 / 中 / 高 の 3 段階に落とす */
+export function volumeLevel(volH1: number, midUsd: number, highUsd: number): { label: string; mark: string } {
+  if (volH1 >= highUsd) return { label: "高", mark: "🟥" };
+  if (volH1 >= midUsd) return { label: "中", mark: "🟧" };
+  return { label: "低", mark: "🟨" };
+}
+
+/** 新規ローンチの規模を 小 / 中 / 大 に落とす。段階しきい値の何段目かで決まる */
+export function launchSize(level: number, levelCount: number): { label: string; mark: string } {
+  if (levelCount >= 3) {
+    if (level >= 3) return { label: "大", mark: "🚀🚀🚀" };
+    if (level === 2) return { label: "中", mark: "🚀🚀" };
+    return { label: "小", mark: "🚀" };
+  }
+  // 段階を 1〜2 個しか設定していない場合は、段数から素直に決める
+  if (level >= levelCount && levelCount > 1) return { label: "大", mark: "🚀🚀" };
+  return { label: "小", mark: "🚀" };
+}
+
+/** 買いか売りに偏っているときだけ 1 行返す。均衡していれば空文字 */
+export function txnSkewLine(buysH1: number, sellsH1: number, showFrom: number): string {
+  const total = buysH1 + sellsH1;
+  if (total < 20) return "";
+  const buyShare = buysH1 / total;
+  if (buyShare >= showFrom) return `買い偏重  買 ${buysH1} / 売 ${sellsH1}（買い ${Math.round(buyShare * 100)}%）`;
+  if (1 - buyShare >= showFrom) return `売り偏重  買 ${buysH1} / 売 ${sellsH1}（売り ${Math.round((1 - buyShare) * 100)}%）`;
+  return "";
+}
+
+export interface AlertViewOptions {
+  volLevelMidUsd: number;
+  volLevelHighUsd: number;
+  txnSkewShow: number;
+  scamShowScoreFrom: number;
+}
+
+const DEFAULT_VIEW: AlertViewOptions = {
+  volLevelMidUsd: 50_000,
+  volLevelHighUsd: 250_000,
+  txnSkewShow: 0.65,
+  scamShowScoreFrom: 20,
+};
+
+/**
+ * 通知本文。
+ * 新規ローンチと復活では見るべき数字が違うので、共通の器に流し込まず別々に組む。
+ * ひと目で種別が分かることを最優先し、内部のフィルタで担保済みの値（流動性・FDV）は載せない。
+ */
 export function formatAlert(
   d: Detection,
   p: DexPair,
   ageMs: number | null,
   scam?: ScamAssessment,
-  showScoreFrom = 20,
+  view: AlertViewOptions = DEFAULT_VIEW,
 ): string {
-  const m = d.metrics;
-  const sym = escapeHtml(p.baseToken.symbol || "?");
-  const name = escapeHtml(p.baseToken.name || "");
-  const quote = escapeHtml(p.quoteToken?.symbol ?? "");
-  const header =
-    d.kind === "new_launch"
-      ? `🚀 <b>新規ローンチ検知</b>  段階 ${d.level}/${d.levelCount}`
-      : `🔥 <b>復活スパイク検知</b>${d.level > 1 ? `  (追加上昇 #${d.level})` : ""}`;
+  const lines = d.kind === "new_launch" ? newLaunchLines(d, p, ageMs, view) : revivalLines(d, p, ageMs, view);
 
-  const lines: string[] = [
-    header,
-    `<b>$${sym}</b> ${name ? `— ${name}` : ""}  <i>/${quote}</i>`,
-    `DEX: ${escapeHtml(dexLabel(p))} | 経過: ${fmtAge(ageMs)}`,
-    `価格: <b>${fmtPrice(m.priceUsd)}</b>  (5m ${fmtPct(m.priceChangeM5)} / 1h ${fmtPct(m.priceChangeH1)}${
-      m.lookbackChangePct !== null ? ` / 安値比 ${fmtPct(m.lookbackChangePct)}` : ""
-    })`,
-    `出来高: 1h <b>${fmtUsd(m.volH1)}</b> | 24h ${fmtUsd(m.volH24)}${
-      m.volSpikeRatio !== null ? ` | 突発率 ${Number.isFinite(m.volSpikeRatio) ? m.volSpikeRatio.toFixed(1) + "x" : "∞"}` : ""
-    }`,
-    `流動性: ${fmtUsd(m.liquidityUsd)} | FDV: ${fmtUsd(p.fdv)}${p.marketCap ? ` | MC: ${fmtUsd(p.marketCap)}` : ""}`,
-    `取引 1h: 買 ${m.buysH1} / 売 ${m.sellsH1}`,
-    `理由: ${escapeHtml(d.reason)}`,
-    `📈 <a href="${escapeHtml(p.url)}">DexScreener で開く</a>`,
-    `CA: <code>${escapeHtml(p.baseToken.address)}</code>`,
-  ];
+  const skew = txnSkewLine(d.metrics.buysH1, d.metrics.sellsH1, view.txnSkewShow);
+  if (skew) lines.push(skew);
 
-  // 通知はするが引っかかる点があるものは、判断材料として理由を添える
-  if (scam && scam.score >= showScoreFrom && scam.signals.length > 0) {
-    lines.push("", `⚠️ <b>注意点</b> (リスク ${scam.score}/100)`);
+  lines.push("", `📈 <a href="${escapeHtml(p.url)}">DexScreener</a>  ·  ${escapeHtml(dexLabel(p))}`);
+  lines.push(`<code>${escapeHtml(p.baseToken.address)}</code>`);
+
+  if (scam && scam.score >= view.scamShowScoreFrom && scam.signals.length > 0) {
+    lines.push("", `⚠️ 注意 (${scam.score}/100)`);
     for (const sig of scam.signals) lines.push(`・${escapeHtml(sig.label)}`);
   }
   return lines.join("\n");
+}
+
+function titleLine(p: DexPair): string {
+  const sym = escapeHtml(p.baseToken.symbol || "?");
+  const name = escapeHtml(p.baseToken.name || "");
+  return name && name.toLowerCase() !== (p.baseToken.symbol || "").toLowerCase() ? `<b>$${sym}</b>  ${name}` : `<b>$${sym}</b>`;
+}
+
+/** 🚀 新規ローンチ: 規模と勢いが分かればよい */
+function newLaunchLines(d: Detection, p: DexPair, ageMs: number | null, view: AlertViewOptions): string[] {
+  const m = d.metrics;
+  const size = launchSize(d.level, d.levelCount);
+  return [
+    `${size.mark} <b>新規ローンチ</b> ｜ 規模 <b>${size.label}</b>`,
+    titleLine(p),
+    "",
+    `価格   <b>${fmtPrice(m.priceUsd)}</b>   1h ${fmtPct(m.priceChangeH1)}   5m ${fmtPct(m.priceChangeM5)}`,
+    `出来高  <b>${fmtUsd(m.volH1)}</b>/h   24h ${fmtUsd(m.volH24)}`,
+    `時価総額 ${fmtUsd(p.marketCap ?? p.fdv)}`,
+    `経過   ${fmtAge(ageMs)}`,
+  ];
+}
+
+/** 🔥 復活: 「どこから」「どれだけ」上がったか、出来高がどの水準かを見せる */
+function revivalLines(d: Detection, p: DexPair, ageMs: number | null, view: AlertViewOptions): string[] {
+  const m = d.metrics;
+  const lv = volumeLevel(m.volH1, view.volLevelMidUsd, view.volLevelHighUsd);
+  const rise = d.display.baseRisePct;
+  const quiet = d.display.quietMs;
+  const ratio = m.volSpikeRatio;
+
+  const kindLabel =
+    d.display.trigger === "breakout" ? "レンジ上抜け" : d.display.trigger === "fast" ? "急変" : "静穏から復活";
+  const head = `🔥 <b>${kindLabel}</b> ｜ 出来高 <b>${lv.label}</b> ${lv.mark}${d.level > 1 ? `  ＋${d.level} 段目` : ""}`;
+  const lines = [head, titleLine(p), ""];
+
+  // いちばん見たい数字を最初に置く
+  const bo = d.display.breakoutPct;
+  if (d.display.trigger === "breakout" && bo !== null && bo !== undefined) {
+    lines.push(`レンジ上限を <b>${fmtPct(bo)}</b> 上抜け   （現在 ${fmtPrice(m.priceUsd)}）`);
+    if (rise !== null && rise !== undefined) lines.push(`底値から ${fmtPct(rise)}`);
+  } else if (rise !== null && rise !== undefined) {
+    lines.push(`底値から <b>${fmtPct(rise)}</b>   （現在 ${fmtPrice(m.priceUsd)}）`);
+  } else {
+    lines.push(`価格   <b>${fmtPrice(m.priceUsd)}</b>`);
+  }
+  lines.push(`直近   1h ${fmtPct(m.priceChangeH1)}   5m ${fmtPct(m.priceChangeM5)}`);
+
+  // 倍率は「平常より増えている」ときだけ意味を持つ。
+  // レンジ抜けは出来高が引き金ではないので、平常並みなら倍率を書かない（0倍 と出ると誤解を招く）。
+  let ratioText = "";
+  if (ratio !== null) {
+    if (!Number.isFinite(ratio)) ratioText = "平常はほぼ無取引";
+    else if (ratio >= 2) ratioText = `平常の ${ratio < 10 ? ratio.toFixed(1) : ratio.toFixed(0)}倍`;
+  }
+  lines.push(`出来高  <b>${fmtUsd(m.volH1)}</b>/h${ratioText ? `   ${ratioText}` : ""}`);
+
+  if (quiet !== null && quiet !== undefined && quiet > 0 && d.display.trigger !== "breakout") {
+    lines.push(`静穏   ${fmtAge(quiet)} ヨコヨコ → 急騰`);
+  }
+  lines.push(`経過   ${fmtAge(ageMs)}`);
+  if (d.display.viaFastLane) lines.push(`⚡ 5分足の急変で早期検知`);
+  return lines;
 }
 
 export function formatPairRow(r: PairRow): string {

@@ -5,7 +5,7 @@ import { detectRevival } from "./detectors/revival.js";
 import { assessScam, formatScamSummary, type ScamAssessment } from "./detectors/scam.js";
 import type { Detection } from "./detectors/types.js";
 import { baseMetrics, HOUR_MS, MINUTE_MS } from "./detectors/common.js";
-import { formatAlert } from "./format.js";
+import { formatAlert, type AlertViewOptions } from "./format.js";
 import { log } from "./logger.js";
 import { PoolScanner, RpcClient } from "./rpc.js";
 import type { Store, Tier } from "./store.js";
@@ -47,6 +47,8 @@ export class Engine {
     lastHealthWarningAt: null,
   };
   private mutedUntil = 0;
+  /** 通知の見せ方に関わる設定をまとめたもの */
+  private readonly view: AlertViewOptions;
   private readonly scanner: PoolScanner | null;
 
   constructor(
@@ -57,6 +59,12 @@ export class Engine {
     rpc: RpcClient | null,
     private readonly now: () => number = Date.now,
   ) {
+    this.view = {
+      volLevelMidUsd: cfg.volLevelMidUsd,
+      volLevelHighUsd: cfg.volLevelHighUsd,
+      txnSkewShow: cfg.txnSkewShow,
+      scamShowScoreFrom: cfg.scamShowScoreFrom,
+    };
     this.scanner = rpc
       ? new PoolScanner(
           rpc,
@@ -253,6 +261,35 @@ export class Engine {
     return rows.length;
   }
 
+  /**
+   * ヨコヨコのレンジ上限を測る。
+   * 直近の値動きそのものを含めると「自分自身を超えられない」ので、末尾を除いて評価する。
+   * レンジと呼べるだけの観測が溜まっていなければ null を返し、この経路は使わない。
+   */
+  private measureRangeHigh(p: DexPair, now: number): number | null {
+    const from = now - this.cfg.revivalBaseWindowMin * MINUTE_MS;
+    const to = now - this.cfg.revivalRangeExcludeMin * MINUTE_MS;
+    if (to <= from) return null;
+    if (this.store.countSnapshotsBetween(p.pairAddress, from, to) < 10) return null;
+    return this.store.maxPriceBetween(p.pairAddress, from, to);
+  }
+
+  /**
+   * ヨコヨコがどれだけ続いたかを測る。
+   * いま同等に活発だった最後の時点を探し、そこからの経過を返す。
+   * 観測履歴が浅いうちは推測になるため null を返し、通知にも出さない。
+   */
+  private measureQuiet(p: DexPair, now: number): number | null {
+    const first = this.store.firstSnapshotAt(p.pairAddress);
+    if (first === null || now - first < HOUR_MS) return null;
+    const current = vol(p, "h1");
+    if (current <= 0) return null;
+    const last = this.store.lastActiveBefore(p.pairAddress, current * 0.4, now);
+    const since = last ?? first;
+    const quiet = now - since;
+    return quiet > 10 * MINUTE_MS ? quiet : null;
+  }
+
   /** tier の再分類 */
   classify(p: DexPair, now: number): Tier {
     const age = pairAgeMs(p, now);
@@ -285,6 +322,9 @@ export class Engine {
         ageMs: age,
         lastAlert: this.store.lastAlert("revival", token),
         lookbackMinPrice: this.store.minPriceSince(p.pairAddress, now - this.cfg.revivalLookbackMin * MINUTE_MS),
+        baseLowPrice: this.store.minPriceSince(p.pairAddress, now - this.cfg.revivalBaseWindowMin * MINUTE_MS),
+        rangeHighPrice: this.measureRangeHigh(p, now),
+        quietMs: this.measureQuiet(p, now),
       },
       this.cfg,
     );
@@ -295,7 +335,11 @@ export class Engine {
     const scam = assessScam(p, this.cfg, now);
     const blocked = this.cfg.scamFilterEnabled && scam.score >= this.cfg.scamScoreThreshold;
 
-    for (const d of candidates) {
+    // 同時に立った場合は復活を優先する。
+    // 「ヨコヨコから動き出した」ほうが、出来高が段階を超えたことより読み手に有用。
+    const chosen = candidates.some((c) => c.kind === "revival") ? candidates.filter((c) => c.kind === "revival") : candidates;
+
+    for (const d of chosen) {
       this.store.insertAlert({
         kind: d.kind,
         token_address: token,
@@ -320,7 +364,7 @@ export class Engine {
         log.info(`[muted] ${d.kind} $${p.baseToken.symbol}: ${d.reason}`);
         continue;
       }
-      const html = formatAlert(d, p, age, scam, this.cfg.scamShowScoreFrom);
+      const html = formatAlert(d, p, age, scam, this.view);
       try {
         await this.sink.broadcast(html);
         this.stats.alertsSent++;
@@ -377,10 +421,11 @@ export class Engine {
       levelCount: 0,
       reason: "これはテスト送信です。実際の検知条件は満たしていません",
       metrics: m,
+      display: { baseRisePct: null, quietMs: null, viaFastLane: false },
     };
     await this.sink.broadcast(
       "🧪 <b>テスト送信</b> — 以下は通知の見本です\n\n" +
-        formatAlert(detection, pair, pairAgeMs(pair, now), assessScam(pair, this.cfg, now), this.cfg.scamShowScoreFrom),
+        formatAlert(detection, pair, pairAgeMs(pair, now), assessScam(pair, this.cfg, now), this.view),
     );
     return `テスト通知を送信しました（$${pair.baseToken.symbol} の実データを使用）`;
   }

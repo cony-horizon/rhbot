@@ -29,9 +29,14 @@ describe("format", () => {
     const d = detectNewLaunch({ now: NOW, pair: p, ageMs: H, lastAlert: null, lookbackMinPrice: null }, makeConfig())!;
     const html = formatAlert(d, p, H);
     expect(html).toContain("🚀");
+    expect(html).toContain("新規ローンチ");
+    expect(html).toContain("規模");
     expect(html).toContain("$A&lt;B");
     expect(html).toContain("<code>" + p.baseToken.address + "</code>");
     expect(html).toContain('href="' + p.url + '"');
-    expect(html).toContain("1h <b>$60.0K</b>");
+    expect(html).toContain("<b>$60.0K</b>/h");
+    // 内部フィルタで担保済みの値は載せない
+    expect(html).not.toContain("流動性");
+    expect(html).not.toContain("FDV");
   });
 });

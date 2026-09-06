@@ -52,6 +52,10 @@ export interface Config {
   revivalMinVolH1Usd: number;
   revivalVolSpikeRatio: number;
   revivalMinBuysH1: number;
+  revivalFastM5Pct: number;
+  revivalBaseWindowMin: number;
+  revivalBreakoutPct: number;
+  revivalRangeExcludeMin: number;
   revivalCooldownMin: number;
   revivalEscalationPct: number;
 
@@ -65,6 +69,10 @@ export interface Config {
   scamMinLiquidityUsd: number;
   scamMinAvgTradeUsd: number;
   scamShowScoreFrom: number;
+
+  volLevelMidUsd: number;
+  volLevelHighUsd: number;
+  txnSkewShow: number;
 
   dbPath: string;
   snapshotRetentionHours: number;
@@ -194,17 +202,21 @@ export function buildConfig(env: Env, strict = true): Config {
     quoteSymbols: list(env, "QUOTE_SYMBOLS", []).map((s) => s.toUpperCase()),
 
     newLaunchEnabled: bool(env, "NEW_LAUNCH_ENABLED", true),
-    newMaxAgeHours: num(env, "NEW_MAX_AGE_HOURS", 20),
+    newMaxAgeHours: num(env, "NEW_MAX_AGE_HOURS", 12),
     newVolH1TiersUsd: numList(env, "NEW_VOL_H1_TIERS_USD", [25_000, 100_000, 500_000]),
     newMinBuysH1: num(env, "NEW_MIN_BUYS_H1", 15),
 
     revivalEnabled: bool(env, "REVIVAL_ENABLED", true),
-    revivalMinAgeHours: num(env, "REVIVAL_MIN_AGE_HOURS", 20),
+    revivalMinAgeHours: num(env, "REVIVAL_MIN_AGE_HOURS", 6),
     revivalPriceChangePct: num(env, "REVIVAL_PRICE_CHANGE_PCT", 30),
     revivalLookbackMin: num(env, "REVIVAL_LOOKBACK_MIN", 120),
     revivalMinVolH1Usd: num(env, "REVIVAL_MIN_VOL_H1_USD", 10_000),
     revivalVolSpikeRatio: num(env, "REVIVAL_VOL_SPIKE_RATIO", 3),
     revivalMinBuysH1: num(env, "REVIVAL_MIN_BUYS_H1", 10),
+    revivalFastM5Pct: num(env, "REVIVAL_FAST_M5_PCT", 20),
+    revivalBaseWindowMin: num(env, "REVIVAL_BASE_WINDOW_MIN", 1440),
+    revivalBreakoutPct: num(env, "REVIVAL_BREAKOUT_PCT", 12),
+    revivalRangeExcludeMin: num(env, "REVIVAL_RANGE_EXCLUDE_MIN", 30),
     revivalCooldownMin: num(env, "REVIVAL_COOLDOWN_MIN", 180),
     revivalEscalationPct: num(env, "REVIVAL_ESCALATION_PCT", 50),
 
@@ -218,6 +230,10 @@ export function buildConfig(env: Env, strict = true): Config {
     scamMinLiquidityUsd: num(env, "SCAM_MIN_LIQUIDITY_USD", 20_000),
     scamMinAvgTradeUsd: num(env, "SCAM_MIN_AVG_TRADE_USD", 40),
     scamShowScoreFrom: num(env, "SCAM_SHOW_SCORE_FROM", 20),
+
+    volLevelMidUsd: num(env, "VOL_LEVEL_MID_USD", 50_000),
+    volLevelHighUsd: num(env, "VOL_LEVEL_HIGH_USD", 250_000),
+    txnSkewShow: num(env, "TXN_SKEW_SHOW", 0.65),
 
     dbPath: str(env, "DB_PATH", "./data/bot.sqlite"),
     snapshotRetentionHours: num(env, "SNAPSHOT_RETENTION_HOURS", 48),

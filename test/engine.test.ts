@@ -63,7 +63,7 @@ describe("Engine", () => {
     const added = await engine.discover();
     expect(added).toBe(1); // 他チェーンは除外
     expect(sent).toHaveLength(1);
-    expect(sent[0]).toContain("新規ローンチ検知");
+    expect(sent[0]).toContain("新規ローンチ");
     expect(sent[0]).toContain("$TCAT");
     expect(store.countByTier().hot).toBe(1);
   });
@@ -94,7 +94,7 @@ describe("Engine", () => {
     spiked.priceChange.h1 = 40;
     await engine.refreshTier("dormant", 1);
     expect(sent).toHaveLength(1);
-    expect(sent[0]).toContain("復活スパイク検知");
+    expect(sent[0]).toMatch(/静穏から復活|レンジ上抜け|急変/);
     expect(sent[0]).toContain("+40");
 
     // 10 分後、まだ同じ状態 → クールダウン中なので再通知なし
@@ -108,7 +108,7 @@ describe("Engine", () => {
     spiked.priceChange.h1 = 120;
     await engine.refreshTier("hot", 1);
     expect(sent).toHaveLength(2);
-    expect(sent[1]).toContain("追加上昇 #2");
+    expect(sent[1]).toContain("＋2 段目");
   });
 
   it("lookback 最安値比でも復活を検知できる（1h 変化率が小さい場合）", async () => {
@@ -125,7 +125,9 @@ describe("Engine", () => {
     cur.volume.h24 = 16_000;
     await engine.refreshTier("dormant", 1);
     expect(sent).toHaveLength(1);
-    expect(sent[0]).toContain("安値比");
+    // 1h 変化率(+12%)ではしきい値に届かず、自前スナップショットの安値比で拾えている
+    expect(sent[0]).toMatch(/静穏から復活|レンジ上抜け/);
+    expect(sent[0]).toContain("底値から");
   });
 
   it("mute 中は通知せず履歴だけ残す", async () => {
@@ -215,7 +217,7 @@ describe("Engine — discovery が検知を飢えさせない", () => {
     live.liquidity = { usd: 40_000 };
     await engine.discover();
     expect(sent).toHaveLength(1);
-    expect(sent[0]).toContain("復活スパイク検知");
+    expect(sent[0]).toMatch(/静穏から復活|レンジ上抜け|急変/);
   });
 
   it("discovery は既存ペアのスナップショットも残す（安値比の計算に必要）", async () => {
@@ -345,7 +347,7 @@ describe("Engine — スキャム除外", () => {
     dex.searchResults = [good];
     await engine.discover();
     expect(sent).toHaveLength(1);
-    expect(sent[0]).toContain("新規ローンチ検知");
+    expect(sent[0]).toContain("新規ローンチ");
   });
 
   it("止めた銘柄はクールダウン判定に影響しない（後で健全になれば通知できる）", async () => {
@@ -375,7 +377,7 @@ describe("Engine — スキャム除外", () => {
     const { dex: d2, sent: s2, engine: e2 } = setup({ SCAM_SHOW_SCORE_FROM: "10" });
     d2.searchResults = [p];
     await e2.discover();
-    expect(s2[0]).toContain("注意点");
+    expect(s2[0]).toContain("注意");
     void dex;
     void sent;
     void engine;

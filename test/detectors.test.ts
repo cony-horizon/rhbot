@@ -102,7 +102,8 @@ describe("detectRevival", () => {
     const d = detectRevival({ now: NOW, pair: p, ageMs: 40 * H, lastAlert: null, lookbackMinPrice: 0.0012 }, cfg);
     expect(d).not.toBeNull();
     expect(d?.metrics.lookbackChangePct).toBeCloseTo(66.7, 0);
-    expect(d?.reason).toContain("120分安値比");
+    // 1h 変化率(+10%)では足りず、安値比(+67%)で成立していることを確認する
+    expect(d?.display.trigger).toBe("dormant");
   });
 
   it("新しすぎるペアは対象外（新規ローンチ側で扱う）", () => {
@@ -138,5 +139,78 @@ describe("detectRevival", () => {
     expect(detectRevival({ now: NOW, pair: makePair({ ...base, volH1: 5_000, volH24: 6_000 }), ageMs: 40 * H, lastAlert: null, lookbackMinPrice: null }, cfg)).toBeNull();
     expect(detectRevival({ now: NOW, pair: makePair({ ...base, buysH1: 2 }), ageMs: 40 * H, lastAlert: null, lookbackMinPrice: null }, cfg)).toBeNull();
     expect(detectRevival({ now: NOW, pair: makePair({ ...base, liq: 100 }), ageMs: 40 * H, lastAlert: null, lookbackMinPrice: null }, cfg)).toBeNull();
+  });
+});
+
+describe("detectRevival — レンジ上抜け（報告された $UNIPCS の型）", () => {
+  /** 24h $8.78M を捌いていた活発な銘柄。出来高では静穏と判定できない */
+  function unipcs(price: number) {
+    const p = makePair({
+      symbol: "UNIPCS",
+      ageHours: 16.78,
+      price,
+      volH1: 102_000,
+      volH24: 8_780_000,
+      liq: 204_700,
+      changeH1: 40,
+      changeM5: -5.4,
+      buysH1: 150,
+      sellsH1: 126,
+    });
+    p.marketCap = 4_900_000;
+    p.fdv = 4_900_000;
+    return p;
+  }
+  const ctx = (price: number, rangeHigh: number | null) => ({
+    now: NOW,
+    pair: unipcs(price),
+    ageMs: 16.78 * H,
+    lastAlert: null,
+    lookbackMinPrice: 0.0027,
+    baseLowPrice: 0.0027,
+    rangeHighPrice: rangeHigh,
+    quietMs: null,
+  });
+
+  it("出来高が平常以下でも、レンジを上抜ければ検知する", () => {
+    const d = detectRevival(ctx(0.0041, 0.0035), cfg);
+    expect(d).not.toBeNull();
+    expect(d?.display.trigger).toBe("breakout");
+    expect(d?.reason).toContain("レンジ上限");
+  });
+
+  it("出来高だけでは検知できないことを確認する（この型を取りこぼしていた原因）", () => {
+    const p = unipcs(0.0041);
+    // 突発率は 1 倍を大きく下回る＝出来高からは「静穏からの復活」に見えない
+    const d = detectRevival(ctx(0.0041, null), cfg);
+    expect(d).toBeNull();
+    void p;
+  });
+
+  it("レンジ内に留まっているうちは検知しない", () => {
+    expect(detectRevival(ctx(0.0036, 0.0035), cfg)).toBeNull();
+  });
+
+  it("通知が来た価格より手前で検知できている", () => {
+    // 実際の通知は $0.004906。それより安い時点で既に成立する
+    expect(detectRevival(ctx(0.0040, 0.0035), cfg)).not.toBeNull();
+  });
+
+  it("レンジの観測が無ければこの経路は使わない", () => {
+    expect(detectRevival(ctx(0.0041, null), cfg)).toBeNull();
+  });
+});
+
+describe("detectRevival — 平常値の見積もり", () => {
+  it("若い銘柄の平常値を、存在しなかった時間で薄めない", () => {
+    // 7h 前に作られ、6h 分で $60K を捌いた銘柄の直近 1h が $20K
+    // 常に 23 で割ると平常値 $1.7K → 12倍 と誤判定する。実在時間(6h)で割れば $6.7K → 3倍
+    const p = makePair({ ageHours: 7, volH1: 20_000, volH24: 60_000, liq: 50_000, changeH1: 40, buysH1: 50 });
+    p.marketCap = 800_000;
+    const d = detectRevival(
+      { now: NOW, pair: p, ageMs: 7 * H, lastAlert: null, lookbackMinPrice: null, baseLowPrice: null, rangeHighPrice: null, quietMs: null },
+      cfg,
+    );
+    expect(d?.metrics.volSpikeRatio).toBeCloseTo(20_000 / ((60_000 - 20_000) / 6), 1);
   });
 });

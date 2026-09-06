@@ -33,7 +33,8 @@ export function detectNewLaunch(ctx: DetectorContext, cfg: Config): Detection | 
     kind: "new_launch",
     level: reached,
     levelCount: tiers.length,
-    reason: `1h 出来高 $${Math.round(m.volH1).toLocaleString("en-US")} が段階 ${reached}/${tiers.length} (>= $${threshold.toLocaleString("en-US")}) に到達`,
+    reason: `1h 出来高が $${threshold.toLocaleString("en-US")} を突破`,
     metrics: m,
+    display: {},
   };
 }

@@ -337,6 +337,42 @@ export class Store {
     return row?.m ?? null;
   }
 
+  /**
+   * 「ヨコヨコがいつまで続いていたか」を測る。
+   * いまと同程度に活発だった最後の時点を探し、その時刻を返す。
+   * 見つからなければ null（＝保持期間のあいだずっと静かだった）。
+   */
+  lastActiveBefore(pairAddress: string, volThreshold: number, beforeTs: number): number | null {
+    const row = this.db
+      .prepare("SELECT MAX(ts) AS t FROM snapshots WHERE pair_address = ? AND ts < ? AND vol_h1 >= ?")
+      .get(pairAddress.toLowerCase(), beforeTs, volThreshold) as { t: number | null } | undefined;
+    return row?.t ?? null;
+  }
+
+  /** そのペアの最初のスナップショット時刻。観測履歴の長さを知るために使う */
+  firstSnapshotAt(pairAddress: string): number | null {
+    const row = this.db.prepare("SELECT MIN(ts) AS t FROM snapshots WHERE pair_address = ?").get(pairAddress.toLowerCase()) as
+      | { t: number | null }
+      | undefined;
+    return row?.t ?? null;
+  }
+
+  /** 指定区間の最高値。「ヨコヨコのレンジ上限」を求めるために使う */
+  maxPriceBetween(pairAddress: string, fromTs: number, toTs: number): number | null {
+    const row = this.db
+      .prepare("SELECT MAX(price_usd) AS m FROM snapshots WHERE pair_address = ? AND ts >= ? AND ts <= ? AND price_usd IS NOT NULL AND price_usd > 0")
+      .get(pairAddress.toLowerCase(), fromTs, toTs) as { m: number | null } | undefined;
+    return row?.m ?? null;
+  }
+
+  /** 指定区間のスナップショット件数。レンジと呼べるだけの観測があるかの確認に使う */
+  countSnapshotsBetween(pairAddress: string, fromTs: number, toTs: number): number {
+    const row = this.db
+      .prepare("SELECT COUNT(*) AS n FROM snapshots WHERE pair_address = ? AND ts >= ? AND ts <= ?")
+      .get(pairAddress.toLowerCase(), fromTs, toTs) as { n: number };
+    return row.n;
+  }
+
   listSnapshots(pairAddress: string, sinceTs: number): SnapshotRow[] {
     return this.db
       .prepare("SELECT ts, price_usd, vol_h1, vol_h24, liquidity_usd, buys_h1, sells_h1 FROM snapshots WHERE pair_address = ? AND ts >= ? ORDER BY ts ASC")
