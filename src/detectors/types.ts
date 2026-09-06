@@ -16,10 +16,14 @@ export interface DetectorContext {
   quietMs?: number | null;
   /** 直近の値動きを除いた、ヨコヨコ期間の高値＝レンジ上限（無ければ null） */
   rangeHighPrice?: number | null;
-  /** この銘柄が記録した最大の 1h 出来高＝全盛期の熱量 */
-  peakVolH1?: number;
+  /** この銘柄が記録した最高時価総額＝全盛期の評価額 */
+  peakMc?: number;
   /** 全盛期を記録した時刻 */
-  peakVolAt?: number | null;
+  peakMcAt?: number | null;
+  /** 直近の値動きを除いた、ヨコヨコ期間の時価総額の上限 */
+  rangeHighMc?: number | null;
+  /** ヨコヨコ期間の時価総額の底 */
+  baseLowMc?: number | null;
 }
 
 export interface DetectionMetrics {
@@ -55,14 +59,20 @@ export interface DetectionDisplay {
   quietMs?: number | null;
   /** 復活: m5 の急騰で早期に拾ったか */
   viaFastLane?: boolean;
-  /** 復活: レンジ上限をどれだけ上抜けたか */
+  /** 復活: 価格のレンジ上限をどれだけ上抜けたか */
   breakoutPct?: number | null;
+  /** 再点火: 時価総額のレンジ上限をどれだけ上抜けたか */
+  mcBreakoutPct?: number | null;
   /** 復活: どの経路で拾ったか */
   trigger?: "reignite" | "dormant" | "breakout" | "fast";
-  /** 再点火: 全盛期の 1h 出来高 */
-  peakVolH1?: number | null;
+  /** 再点火: 全盛期の時価総額 */
+  peakMc?: number | null;
   /** 再点火: 全盛期からの経過 */
   peakAgoMs?: number | null;
-  /** 再点火: いまの出来高が全盛期の何割か */
+  /** 再点火: いまの時価総額が全盛期の何割か */
   cooledRatio?: number | null;
+  /** 再点火: 抜けたレンジの上限（時価総額） */
+  rangeHighMc?: number | null;
+  /** 現在の時価総額 */
+  currentMc?: number | null;
 }

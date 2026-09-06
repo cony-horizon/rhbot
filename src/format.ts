@@ -154,12 +154,23 @@ function revivalLines(d: Detection, p: DexPair, ageMs: number | null, view: Aler
 
   // いちばん見たい数字を最初に置く
   const bo = d.display.breakoutPct;
-  if (t === "reignite" && bo !== null && bo !== undefined) {
-    const peak = d.display.peakVolH1 ?? 0;
+  if (t === "reignite") {
+    const peak = d.display.peakMc ?? 0;
     const ago = d.display.peakAgoMs;
-    lines.push(`全盛期 <b>${fmtUsd(peak)}</b>/h${ago ? `（${fmtAge(ago)}前）` : ""} → いま ${fmtUsd(m.volH1)}/h`);
-    lines.push(`レンジ上限を <b>${fmtPct(bo)}</b> 上抜け   （現在 ${fmtPrice(m.priceUsd)}）`);
-    if (rise !== null && rise !== undefined) lines.push(`底値から ${fmtPct(rise)}`);
+    const nowMc = d.display.currentMc ?? 0;
+    const rangeMc = d.display.rangeHighMc ?? 0;
+    const cooled = d.display.cooledRatio;
+    lines.push(
+      `全盛期 MC <b>${fmtUsd(peak)}</b>${ago ? `（${fmtAge(ago)}前）` : ""} → いま <b>${fmtUsd(nowMc)}</b>${
+        cooled !== null && cooled !== undefined ? `（${Math.round(cooled * 100)}%）` : ""
+      }`,
+    );
+    // 再点火は時価総額で判定しているので、上抜け率も時価総額基準のものを出す
+    const mcBo = d.display.mcBreakoutPct;
+    if (rangeMc > 0 && mcBo !== null && mcBo !== undefined) {
+      lines.push(`レンジ上限 ${fmtUsd(rangeMc)} を <b>${fmtPct(mcBo)}</b> 上抜け`);
+    }
+    if (rise !== null && rise !== undefined) lines.push(`底値から <b>${fmtPct(rise)}</b>`);
   } else if (t === "breakout" && bo !== null && bo !== undefined) {
     lines.push(`レンジ上限を <b>${fmtPct(bo)}</b> 上抜け   （現在 ${fmtPrice(m.priceUsd)}）`);
     if (rise !== null && rise !== undefined) lines.push(`底値から ${fmtPct(rise)}`);

@@ -48,17 +48,23 @@ export function detectRevival(ctx: DetectorContext, cfg: Config): Detection | nu
   const breakoutPct = rangeHigh !== null && rangeHigh > 0 ? (m.priceUsd / rangeHigh - 1) * 100 : null;
 
   // 再点火の下地。
-  // かつて大きな出来高を記録した銘柄は、それだけ実需の関心を集めた証拠がある。
+  // かつて大きな時価総額をつけた銘柄は、それだけの評価を実際に得た証拠がある。
   // その履歴が確度を担保してくれるので、レンジ抜けのしきい値を下げて早く拾える。
-  const peakVol = ctx.peakVolH1 ?? 0;
-  const cooledRatio = peakVol > 0 ? m.volH1 / peakVol : null;
-  const hasPedigree = cfg.reigniteEnabled && peakVol >= cfg.reigniteMinPeakVolUsd;
+  const currentMc = pair.marketCap && pair.marketCap > 0 ? pair.marketCap : (pair.fdv ?? 0);
+  const peakMc = ctx.peakMc ?? 0;
+  const cooledRatio = peakMc > 0 && currentMc > 0 ? currentMc / peakMc : null;
+  const hasPedigree = cfg.reigniteEnabled && peakMc >= cfg.reigniteMinPeakMcUsd;
   const cooled = cooledRatio !== null && cooledRatio <= cfg.reigniteCooledRatio;
+
+  // 時価総額で見たレンジ上限をどれだけ超えたか。
+  // 利用者が実際に眺めているのは時価総額なので、判定も表示もその単位で揃える。
+  const rangeHighMc = ctx.rangeHighMc ?? null;
+  const mcBreakoutPct = rangeHighMc !== null && rangeHighMc > 0 && currentMc > 0 ? (currentMc / rangeHighMc - 1) * 100 : null;
 
   // 成立経路を判定する。確度の高い順に見る
   const m5 = m.priceChangeM5;
   let trigger: "reignite" | "dormant" | "breakout" | "fast" | null = null;
-  if (hasPedigree && cooled && breakoutPct !== null && breakoutPct >= cfg.reigniteBreakoutPct) {
+  if (hasPedigree && cooled && mcBreakoutPct !== null && mcBreakoutPct >= cfg.reigniteBreakoutPct) {
     trigger = "reignite";
   } else if (ratio >= cfg.revivalVolSpikeRatio && Number.isFinite(rise) && rise >= cfg.revivalPriceChangePct) {
     trigger = "dormant";
@@ -82,14 +88,21 @@ export function detectRevival(ctx: DetectorContext, cfg: Config): Detection | nu
     }
   }
 
-  // ヨコヨコの底からどれだけ上がったか
+  // ヨコヨコの底からどれだけ上がったか。
+  // 再点火では時価総額の底を基準にする（利用者が見ている単位に合わせる）。
+  const baseMc = ctx.baseLowMc ?? null;
   const base = ctx.baseLowPrice ?? null;
-  const baseRisePct = base !== null && base > 0 ? (m.priceUsd / base - 1) * 100 : null;
+  const baseRisePct =
+    trigger === "reignite" && baseMc !== null && baseMc > 0 && currentMc > 0
+      ? (currentMc / baseMc - 1) * 100
+      : base !== null && base > 0
+        ? (m.priceUsd / base - 1) * 100
+        : null;
 
   const ratioText = Number.isFinite(ratio) ? `${ratio.toFixed(1)}x` : "∞";
   const reason =
     trigger === "reignite"
-      ? `全盛期 $${Math.round(peakVol).toLocaleString("en-US")}/h の銘柄がレンジを +${breakoutPct!.toFixed(0)}% 上抜け`
+      ? `全盛期 MC $${Math.round(peakMc).toLocaleString("en-US")} の銘柄がレンジを +${mcBreakoutPct!.toFixed(0)}% 上抜け`
       : trigger === "breakout"
       ? `レンジ上限を +${breakoutPct!.toFixed(0)}% 上抜け`
       : trigger === "fast"
@@ -107,10 +120,13 @@ export function detectRevival(ctx: DetectorContext, cfg: Config): Detection | nu
       quietMs: ctx.quietMs ?? null,
       viaFastLane: trigger === "fast",
       breakoutPct,
+      mcBreakoutPct,
       trigger,
-      peakVolH1: peakVol > 0 ? peakVol : null,
-      peakAgoMs: ctx.peakVolAt ? now - ctx.peakVolAt : null,
+      peakMc: peakMc > 0 ? peakMc : null,
+      peakAgoMs: ctx.peakMcAt ? now - ctx.peakMcAt : null,
       cooledRatio,
+      rangeHighMc,
+      currentMc: currentMc > 0 ? currentMc : null,
     },
   };
 }

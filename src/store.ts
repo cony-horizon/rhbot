@@ -35,12 +35,15 @@ export interface PairRow {
   peak_vol_at: number | null;
   peak_price: number;
   peak_price_at: number | null;
+  /** この銘柄が記録した最高時価総額＝全盛期の評価額 */
   peak_mc: number;
+  peak_mc_at: number | null;
 }
 
 export interface SnapshotRow {
   ts: number;
   price_usd: number | null;
+  market_cap: number;
   vol_h1: number;
   vol_h24: number;
   liquidity_usd: number;
@@ -105,9 +108,10 @@ CREATE TABLE IF NOT EXISTS pairs (
   peak_vol_at INTEGER,
   peak_price REAL NOT NULL DEFAULT 0,
   peak_price_at INTEGER,
-  peak_mc REAL NOT NULL DEFAULT 0
+  peak_mc REAL NOT NULL DEFAULT 0,
+  peak_mc_at INTEGER
 );
-CREATE INDEX IF NOT EXISTS idx_pairs_peak ON pairs(peak_vol_h1);
+CREATE INDEX IF NOT EXISTS idx_pairs_peak ON pairs(peak_mc);
 CREATE INDEX IF NOT EXISTS idx_pairs_tier_refresh ON pairs(tier, last_refreshed_at);
 CREATE INDEX IF NOT EXISTS idx_pairs_base ON pairs(base_address);
 CREATE TABLE IF NOT EXISTS snapshots (
@@ -115,6 +119,7 @@ CREATE TABLE IF NOT EXISTS snapshots (
   pair_address TEXT NOT NULL,
   ts INTEGER NOT NULL,
   price_usd REAL,
+  market_cap REAL NOT NULL DEFAULT 0,
   vol_h1 REAL NOT NULL DEFAULT 0,
   vol_h24 REAL NOT NULL DEFAULT 0,
   liquidity_usd REAL NOT NULL DEFAULT 0,
@@ -180,10 +185,16 @@ export class Store {
       ["peak_price", "REAL NOT NULL DEFAULT 0"],
       ["peak_price_at", "INTEGER"],
       ["peak_mc", "REAL NOT NULL DEFAULT 0"],
+      ["peak_mc_at", "INTEGER"],
     ];
     for (const [name, def] of peaks) {
       if (!pairCols.has(name)) this.db.exec(`ALTER TABLE pairs ADD COLUMN ${name} ${def}`);
     }
+
+    const snapCols = new Set(
+      (this.db.prepare("PRAGMA table_info(snapshots)").all() as unknown as { name: string }[]).map((c) => c.name),
+    );
+    if (!snapCols.has("market_cap")) this.db.exec("ALTER TABLE snapshots ADD COLUMN market_cap REAL NOT NULL DEFAULT 0");
   }
 
   close(): void {
@@ -297,30 +308,31 @@ export class Store {
            peak_vol_h1   = CASE WHEN ? > peak_vol_h1 THEN ? ELSE peak_vol_h1 END,
            peak_price_at = CASE WHEN ? > peak_price  THEN ? ELSE peak_price_at END,
            peak_price    = CASE WHEN ? > peak_price  THEN ? ELSE peak_price END,
+           peak_mc_at    = CASE WHEN ? > peak_mc     THEN ? ELSE peak_mc_at END,
            peak_mc       = CASE WHEN ? > peak_mc     THEN ? ELSE peak_mc END
          WHERE pair_address = ?`,
       )
-      .run(volH1, now, volH1, volH1, price ?? 0, now, price ?? 0, price ?? 0, mc, mc, pairAddress.toLowerCase());
+      .run(volH1, now, volH1, volH1, price ?? 0, now, price ?? 0, price ?? 0, mc, now, mc, mc, pairAddress.toLowerCase());
   }
 
   /**
    * 全盛期が大きかった銘柄を、いま静かでも優先的に見に行く。
    * 「元大物のレンジ抜け」を早く掴むには、監視間隔そのものを短くする必要がある。
    */
-  listPriorityForRefresh(minPeakVolUsd: number, staleBefore: number, limit: number): PairRow[] {
+  listPriorityForRefresh(minPeakMcUsd: number, staleBefore: number, limit: number): PairRow[] {
     return this.db
       .prepare(
         `SELECT * FROM pairs
-         WHERE peak_vol_h1 >= ? AND last_refreshed_at <= ? AND tier != 'dead'
+         WHERE peak_mc >= ? AND last_refreshed_at <= ? AND tier != 'dead'
          ORDER BY last_refreshed_at ASC LIMIT ?`,
       )
-      .all(minPeakVolUsd, staleBefore, limit) as unknown as PairRow[];
+      .all(minPeakMcUsd, staleBefore, limit) as unknown as PairRow[];
   }
 
-  countPriority(minPeakVolUsd: number): number {
+  countPriority(minPeakMcUsd: number): number {
     const row = this.db
-      .prepare("SELECT COUNT(*) AS n FROM pairs WHERE peak_vol_h1 >= ? AND tier != 'dead'")
-      .get(minPeakVolUsd) as { n: number };
+      .prepare("SELECT COUNT(*) AS n FROM pairs WHERE peak_mc >= ? AND tier != 'dead'")
+      .get(minPeakMcUsd) as { n: number };
     return row.n;
   }
 
@@ -394,9 +406,43 @@ export class Store {
   insertSnapshot(p: DexPair, now: number): void {
     this.db
       .prepare(
-        "INSERT INTO snapshots(pair_address, ts, price_usd, vol_h1, vol_h24, liquidity_usd, buys_h1, sells_h1) VALUES(?, ?, ?, ?, ?, ?, ?, ?)",
+        "INSERT INTO snapshots(pair_address, ts, price_usd, market_cap, vol_h1, vol_h24, liquidity_usd, buys_h1, sells_h1) VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?)",
       )
-      .run(p.pairAddress.toLowerCase(), now, priceUsd(p), vol(p, "h1"), vol(p, "h24"), liquidityUsd(p), buys(p, "h1"), sells(p, "h1"));
+      .run(
+        p.pairAddress.toLowerCase(),
+        now,
+        priceUsd(p),
+        p.marketCap ?? p.fdv ?? 0,
+        vol(p, "h1"),
+        vol(p, "h24"),
+        liquidityUsd(p),
+        buys(p, "h1"),
+        sells(p, "h1"),
+      );
+  }
+
+  /** 指定区間の最高時価総額。ヨコヨコのレンジ上限を時価総額で測るために使う */
+  maxMcBetween(pairAddress: string, fromTs: number, toTs: number): number | null {
+    const row = this.db
+      .prepare("SELECT MAX(market_cap) AS m FROM snapshots WHERE pair_address = ? AND ts >= ? AND ts <= ? AND market_cap > 0")
+      .get(pairAddress.toLowerCase(), fromTs, toTs) as { m: number | null } | undefined;
+    return row?.m ?? null;
+  }
+
+  /** 指定時刻以降の最低時価総額＝ヨコヨコの底 */
+  minMcSince(pairAddress: string, sinceTs: number): number | null {
+    const row = this.db
+      .prepare("SELECT MIN(market_cap) AS m FROM snapshots WHERE pair_address = ? AND ts >= ? AND market_cap > 0")
+      .get(pairAddress.toLowerCase(), sinceTs) as { m: number | null } | undefined;
+    return row?.m ?? null;
+  }
+
+  /** 時価総額が取れているスナップショットの件数。レンジと呼べる観測があるかの確認に使う */
+  countMcSnapshotsBetween(pairAddress: string, fromTs: number, toTs: number): number {
+    const row = this.db
+      .prepare("SELECT COUNT(*) AS n FROM snapshots WHERE pair_address = ? AND ts >= ? AND ts <= ? AND market_cap > 0")
+      .get(pairAddress.toLowerCase(), fromTs, toTs) as { n: number };
+    return row.n;
   }
 
   /** 指定時刻以降のスナップショット中の最安値（価格欠損は除外） */
@@ -445,7 +491,7 @@ export class Store {
 
   listSnapshots(pairAddress: string, sinceTs: number): SnapshotRow[] {
     return this.db
-      .prepare("SELECT ts, price_usd, vol_h1, vol_h24, liquidity_usd, buys_h1, sells_h1 FROM snapshots WHERE pair_address = ? AND ts >= ? ORDER BY ts ASC")
+      .prepare("SELECT ts, price_usd, market_cap, vol_h1, vol_h24, liquidity_usd, buys_h1, sells_h1 FROM snapshots WHERE pair_address = ? AND ts >= ? ORDER BY ts ASC")
       .all(pairAddress.toLowerCase(), sinceTs) as unknown as SnapshotRow[];
   }
 

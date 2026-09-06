@@ -275,6 +275,18 @@ export class Engine {
   }
 
   /**
+   * ヨコヨコのレンジ上限を時価総額で測る。
+   * 価格ではなく時価総額で見るのは、供給量が変わっても比較が崩れないため。
+   */
+  private measureRangeHighMc(p: DexPair, now: number): number | null {
+    const from = now - this.cfg.revivalBaseWindowMin * MINUTE_MS;
+    const to = now - this.cfg.revivalRangeExcludeMin * MINUTE_MS;
+    if (to <= from) return null;
+    if (this.store.countMcSnapshotsBetween(p.pairAddress, from, to) < 10) return null;
+    return this.store.maxMcBetween(p.pairAddress, from, to);
+  }
+
+  /**
    * ヨコヨコがどれだけ続いたかを測る。
    * いま同等に活発だった最後の時点を探し、そこからの経過を返す。
    * 観測履歴が浅いうちは推測になるため null を返し、通知にも出さない。
@@ -296,7 +308,7 @@ export class Engine {
    */
   async refreshPriority(intervalSec: number, maxPairs = 300): Promise<number> {
     const now = this.now();
-    const rows = this.store.listPriorityForRefresh(this.cfg.priorityPeakVolUsd, now - intervalSec * 1000, maxPairs);
+    const rows = this.store.listPriorityForRefresh(this.cfg.priorityPeakMcUsd, now - intervalSec * 1000, maxPairs);
     if (rows.length === 0) return 0;
     const pairs = await this.dex.getPairs(
       this.cfg.chainId,
@@ -354,8 +366,10 @@ export class Engine {
         baseLowPrice: this.store.minPriceSince(p.pairAddress, now - this.cfg.revivalBaseWindowMin * MINUTE_MS),
         rangeHighPrice: this.measureRangeHigh(p, now),
         quietMs: this.measureQuiet(p, now),
-        peakVolH1: row?.peak_vol_h1 ?? 0,
-        peakVolAt: row?.peak_vol_at ?? null,
+        peakMc: row?.peak_mc ?? 0,
+        peakMcAt: row?.peak_mc_at ?? null,
+        rangeHighMc: this.measureRangeHighMc(p, now),
+        baseLowMc: this.store.minMcSince(p.pairAddress, now - this.cfg.revivalBaseWindowMin * MINUTE_MS),
       },
       this.cfg,
     );

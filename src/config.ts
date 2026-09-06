@@ -57,10 +57,10 @@ export interface Config {
   revivalBreakoutPct: number;
   revivalRangeExcludeMin: number;
   reigniteEnabled: boolean;
-  reigniteMinPeakVolUsd: number;
+  reigniteMinPeakMcUsd: number;
   reigniteCooledRatio: number;
   reigniteBreakoutPct: number;
-  priorityPeakVolUsd: number;
+  priorityPeakMcUsd: number;
   priorityPollIntervalSec: number;
   revivalCooldownMin: number;
   revivalEscalationPct: number;
@@ -224,10 +224,10 @@ export function buildConfig(env: Env, strict = true): Config {
     revivalBreakoutPct: num(env, "REVIVAL_BREAKOUT_PCT", 12),
     revivalRangeExcludeMin: num(env, "REVIVAL_RANGE_EXCLUDE_MIN", 30),
     reigniteEnabled: bool(env, "REIGNITE_ENABLED", true),
-    reigniteMinPeakVolUsd: num(env, "REIGNITE_MIN_PEAK_VOL_USD", 300_000),
+    reigniteMinPeakMcUsd: num(env, "REIGNITE_MIN_PEAK_MC_USD", 1_000_000),
     reigniteCooledRatio: num(env, "REIGNITE_COOLED_RATIO", 0.5),
     reigniteBreakoutPct: num(env, "REIGNITE_BREAKOUT_PCT", 6),
-    priorityPeakVolUsd: num(env, "PRIORITY_PEAK_VOL_USD", 300_000),
+    priorityPeakMcUsd: num(env, "PRIORITY_PEAK_MC_USD", 1_000_000),
     priorityPollIntervalSec: num(env, "PRIORITY_POLL_INTERVAL_SEC", 45),
     revivalCooldownMin: num(env, "REVIVAL_COOLDOWN_MIN", 180),
     revivalEscalationPct: num(env, "REVIVAL_ESCALATION_PCT", 50),
