@@ -30,6 +30,12 @@ export interface PairRow {
   source: string;
   manual: number;
   miss_count: number;
+  /** この銘柄が記録した最大の 1h 出来高＝全盛期の熱量 */
+  peak_vol_h1: number;
+  peak_vol_at: number | null;
+  peak_price: number;
+  peak_price_at: number | null;
+  peak_mc: number;
 }
 
 export interface SnapshotRow {
@@ -94,8 +100,14 @@ CREATE TABLE IF NOT EXISTS pairs (
   dead_since INTEGER,
   source TEXT NOT NULL DEFAULT '',
   manual INTEGER NOT NULL DEFAULT 0,
-  miss_count INTEGER NOT NULL DEFAULT 0
+  miss_count INTEGER NOT NULL DEFAULT 0,
+  peak_vol_h1 REAL NOT NULL DEFAULT 0,
+  peak_vol_at INTEGER,
+  peak_price REAL NOT NULL DEFAULT 0,
+  peak_price_at INTEGER,
+  peak_mc REAL NOT NULL DEFAULT 0
 );
+CREATE INDEX IF NOT EXISTS idx_pairs_peak ON pairs(peak_vol_h1);
 CREATE INDEX IF NOT EXISTS idx_pairs_tier_refresh ON pairs(tier, last_refreshed_at);
 CREATE INDEX IF NOT EXISTS idx_pairs_base ON pairs(base_address);
 CREATE TABLE IF NOT EXISTS snapshots (
@@ -157,6 +169,20 @@ export class Store {
     ];
     for (const [name, def] of added) {
       if (!cols.has(name)) this.db.exec(`ALTER TABLE alerts ADD COLUMN ${name} ${def}`);
+    }
+
+    const pairCols = new Set(
+      (this.db.prepare("PRAGMA table_info(pairs)").all() as unknown as { name: string }[]).map((c) => c.name),
+    );
+    const peaks: [string, string][] = [
+      ["peak_vol_h1", "REAL NOT NULL DEFAULT 0"],
+      ["peak_vol_at", "INTEGER"],
+      ["peak_price", "REAL NOT NULL DEFAULT 0"],
+      ["peak_price_at", "INTEGER"],
+      ["peak_mc", "REAL NOT NULL DEFAULT 0"],
+    ];
+    for (const [name, def] of peaks) {
+      if (!pairCols.has(name)) this.db.exec(`ALTER TABLE pairs ADD COLUMN ${name} ${def}`);
     }
   }
 
@@ -223,6 +249,7 @@ export class Store {
           source,
           opts.manual ? 1 : 0,
         );
+      this.recordPeak(addr, h1, price, p.marketCap ?? p.fdv ?? 0, now);
       return true;
     }
     this.db
@@ -251,7 +278,50 @@ export class Store {
         opts.manual ? 1 : 0,
         addr,
       );
+    this.recordPeak(addr, h1, price, p.marketCap ?? p.fdv ?? 0, now);
     return false;
+  }
+
+  /**
+   * 全盛期を更新する。単調増加なので、スナップショットの保持期間を過ぎても
+   * 「この銘柄はかつてどれだけ動いていたか」が残る。
+   * 再点火の判定は、この履歴があるかどうかで確度が大きく変わる。
+   */
+  recordPeak(pairAddress: string, volH1: number, price: number | null, mc: number, now: number): void {
+    // SQLite の UPDATE は全ての SET 式を更新前の行に対して評価するので、
+    // 同じ文の中で「更新するか」と「いつ更新したか」を同時に判定できる。
+    this.db
+      .prepare(
+        `UPDATE pairs SET
+           peak_vol_at   = CASE WHEN ? > peak_vol_h1 THEN ? ELSE peak_vol_at END,
+           peak_vol_h1   = CASE WHEN ? > peak_vol_h1 THEN ? ELSE peak_vol_h1 END,
+           peak_price_at = CASE WHEN ? > peak_price  THEN ? ELSE peak_price_at END,
+           peak_price    = CASE WHEN ? > peak_price  THEN ? ELSE peak_price END,
+           peak_mc       = CASE WHEN ? > peak_mc     THEN ? ELSE peak_mc END
+         WHERE pair_address = ?`,
+      )
+      .run(volH1, now, volH1, volH1, price ?? 0, now, price ?? 0, price ?? 0, mc, mc, pairAddress.toLowerCase());
+  }
+
+  /**
+   * 全盛期が大きかった銘柄を、いま静かでも優先的に見に行く。
+   * 「元大物のレンジ抜け」を早く掴むには、監視間隔そのものを短くする必要がある。
+   */
+  listPriorityForRefresh(minPeakVolUsd: number, staleBefore: number, limit: number): PairRow[] {
+    return this.db
+      .prepare(
+        `SELECT * FROM pairs
+         WHERE peak_vol_h1 >= ? AND last_refreshed_at <= ? AND tier != 'dead'
+         ORDER BY last_refreshed_at ASC LIMIT ?`,
+      )
+      .all(minPeakVolUsd, staleBefore, limit) as unknown as PairRow[];
+  }
+
+  countPriority(minPeakVolUsd: number): number {
+    const row = this.db
+      .prepare("SELECT COUNT(*) AS n FROM pairs WHERE peak_vol_h1 >= ? AND tier != 'dead'")
+      .get(minPeakVolUsd) as { n: number };
+    return row.n;
   }
 
   setTier(pairAddress: string, tier: Tier, now: number): void {

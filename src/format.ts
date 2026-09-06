@@ -145,14 +145,22 @@ function revivalLines(d: Detection, p: DexPair, ageMs: number | null, view: Aler
   const quiet = d.display.quietMs;
   const ratio = m.volSpikeRatio;
 
+  const t = d.display.trigger;
   const kindLabel =
-    d.display.trigger === "breakout" ? "レンジ上抜け" : d.display.trigger === "fast" ? "急変" : "静穏から復活";
-  const head = `🔥 <b>${kindLabel}</b> ｜ 出来高 <b>${lv.label}</b> ${lv.mark}${d.level > 1 ? `  ＋${d.level} 段目` : ""}`;
+    t === "reignite" ? "再点火" : t === "breakout" ? "レンジ上抜け" : t === "fast" ? "急変" : "静穏から復活";
+  const icon = t === "reignite" ? "♻️🔥" : "🔥";
+  const head = `${icon} <b>${kindLabel}</b> ｜ 出来高 <b>${lv.label}</b> ${lv.mark}${d.level > 1 ? `  ＋${d.level} 段目` : ""}`;
   const lines = [head, titleLine(p), ""];
 
   // いちばん見たい数字を最初に置く
   const bo = d.display.breakoutPct;
-  if (d.display.trigger === "breakout" && bo !== null && bo !== undefined) {
+  if (t === "reignite" && bo !== null && bo !== undefined) {
+    const peak = d.display.peakVolH1 ?? 0;
+    const ago = d.display.peakAgoMs;
+    lines.push(`全盛期 <b>${fmtUsd(peak)}</b>/h${ago ? `（${fmtAge(ago)}前）` : ""} → いま ${fmtUsd(m.volH1)}/h`);
+    lines.push(`レンジ上限を <b>${fmtPct(bo)}</b> 上抜け   （現在 ${fmtPrice(m.priceUsd)}）`);
+    if (rise !== null && rise !== undefined) lines.push(`底値から ${fmtPct(rise)}`);
+  } else if (t === "breakout" && bo !== null && bo !== undefined) {
     lines.push(`レンジ上限を <b>${fmtPct(bo)}</b> 上抜け   （現在 ${fmtPrice(m.priceUsd)}）`);
     if (rise !== null && rise !== undefined) lines.push(`底値から ${fmtPct(rise)}`);
   } else if (rise !== null && rise !== undefined) {

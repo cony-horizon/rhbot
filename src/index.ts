@@ -47,6 +47,8 @@ function configText(cfg: Config): string {
     `<b>復活</b> ${cfg.revivalEnabled ? "ON" : "OFF"}: ${cfg.revivalMinAgeHours}h〜, 価格 +${cfg.revivalPriceChangePct}% (1h or ${cfg.revivalLookbackMin}分安値比), 1h出来高>=${fmtUsd(
       cfg.revivalMinVolH1Usd,
     )}, 突発率>=${cfg.revivalVolSpikeRatio}x, 買>=${cfg.revivalMinBuysH1}, cooldown ${cfg.revivalCooldownMin}分, 追加上昇 +${cfg.revivalEscalationPct}%`,
+    `<b>再点火</b> ${cfg.reigniteEnabled ? "ON" : "OFF"}: 全盛期 ${fmtUsd(cfg.reigniteMinPeakVolUsd)}/h 以上 → 全盛期の ${Math.round(cfg.reigniteCooledRatio * 100)}% 以下に冷え込み → レンジを +${cfg.reigniteBreakoutPct}% 上抜け`,
+    `<b>レンジ上抜け</b>: レンジ上限を +${cfg.revivalBreakoutPct}% 上抜け（窓 ${cfg.revivalBaseWindowMin}分・直近 ${cfg.revivalRangeExcludeMin}分は除外）`,
     `<b>スキャム除外</b> ${cfg.scamFilterEnabled ? "ON" : "OFF"}: リスク ${cfg.scamScoreThreshold}/100 以上を通知しない`,
     `  出来高/流動性 ${cfg.scamChurnMid}x で加点・${cfg.scamChurnHigh}x で重く加点 | 流動性/時価総額 ${cfg.scamMinDepthPct}% 未満で加点`,
     `  流動性 ${fmtUsd(cfg.scamPumpLiquidityUsd)} 未満で +${cfg.scamPumpPct}% の急騰は加点 | 流動性 ${fmtUsd(cfg.scamMinLiquidityUsd)} 未満で加点`,
@@ -128,6 +130,7 @@ async function main(): Promise<void> {
           return [
             "<b>監視状況</b>",
             `ペア: hot ${tiers.hot} / dormant ${tiers.dormant} / dead ${tiers.dead} (pending ${store.countPending()})`,
+            `優先監視: ${store.countPriority(cfg.priorityPeakVolUsd)} 件（全盛期 ${fmtUsd(cfg.priorityPeakVolUsd)}/h 超）を ${cfg.priorityPollIntervalSec}s ごとに確認`,
             `直近 24h アラート: ${store.countAlertsSince(Date.now() - 86_400_000)} 件 (送信累計 ${s.alertsSent})`,
             `直近 24h フィルタ: ${store.countSuppressedSince(Date.now() - 86_400_000)} 件をスキャム判定で抑制 (累計 ${s.alertsSuppressed})`,
             `最終 discovery: ${s.lastDiscoveryAt ? new Date(s.lastDiscoveryAt).toISOString() : "-"} (+${s.lastDiscoveryAdded})`,
@@ -227,6 +230,9 @@ async function main(): Promise<void> {
     every("discovery", cfg.discoveryIntervalSec * 1000, () => engine.discover().then(() => undefined)),
     every("refresh:hot", Math.max(10, Math.floor(cfg.pollIntervalSec / 3)) * 1000, () =>
       engine.refreshTier("hot", cfg.pollIntervalSec).then(() => undefined),
+    ),
+    every("refresh:priority", Math.max(10, Math.floor(cfg.priorityPollIntervalSec / 3)) * 1000, () =>
+      engine.refreshPriority(cfg.priorityPollIntervalSec).then(() => undefined),
     ),
     every("refresh:dormant", 30_000, () => engine.refreshTier("dormant", cfg.dormantPollIntervalSec).then(() => undefined)),
     every("refresh:dead", 120_000, () => engine.refreshTier("dead", cfg.deadPollIntervalSec, 300).then(() => undefined)),

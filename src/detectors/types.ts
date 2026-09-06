@@ -16,6 +16,10 @@ export interface DetectorContext {
   quietMs?: number | null;
   /** 直近の値動きを除いた、ヨコヨコ期間の高値＝レンジ上限（無ければ null） */
   rangeHighPrice?: number | null;
+  /** この銘柄が記録した最大の 1h 出来高＝全盛期の熱量 */
+  peakVolH1?: number;
+  /** 全盛期を記録した時刻 */
+  peakVolAt?: number | null;
 }
 
 export interface DetectionMetrics {
@@ -54,5 +58,11 @@ export interface DetectionDisplay {
   /** 復活: レンジ上限をどれだけ上抜けたか */
   breakoutPct?: number | null;
   /** 復活: どの経路で拾ったか */
-  trigger?: "dormant" | "breakout" | "fast";
+  trigger?: "reignite" | "dormant" | "breakout" | "fast";
+  /** 再点火: 全盛期の 1h 出来高 */
+  peakVolH1?: number | null;
+  /** 再点火: 全盛期からの経過 */
+  peakAgoMs?: number | null;
+  /** 再点火: いまの出来高が全盛期の何割か */
+  cooledRatio?: number | null;
 }

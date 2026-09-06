@@ -47,10 +47,20 @@ export function detectRevival(ctx: DetectorContext, cfg: Config): Detection | nu
   const rangeHigh = ctx.rangeHighPrice ?? null;
   const breakoutPct = rangeHigh !== null && rangeHigh > 0 ? (m.priceUsd / rangeHigh - 1) * 100 : null;
 
-  // 成立経路を判定する
+  // 再点火の下地。
+  // かつて大きな出来高を記録した銘柄は、それだけ実需の関心を集めた証拠がある。
+  // その履歴が確度を担保してくれるので、レンジ抜けのしきい値を下げて早く拾える。
+  const peakVol = ctx.peakVolH1 ?? 0;
+  const cooledRatio = peakVol > 0 ? m.volH1 / peakVol : null;
+  const hasPedigree = cfg.reigniteEnabled && peakVol >= cfg.reigniteMinPeakVolUsd;
+  const cooled = cooledRatio !== null && cooledRatio <= cfg.reigniteCooledRatio;
+
+  // 成立経路を判定する。確度の高い順に見る
   const m5 = m.priceChangeM5;
-  let trigger: "dormant" | "breakout" | "fast" | null = null;
-  if (ratio >= cfg.revivalVolSpikeRatio && Number.isFinite(rise) && rise >= cfg.revivalPriceChangePct) {
+  let trigger: "reignite" | "dormant" | "breakout" | "fast" | null = null;
+  if (hasPedigree && cooled && breakoutPct !== null && breakoutPct >= cfg.reigniteBreakoutPct) {
+    trigger = "reignite";
+  } else if (ratio >= cfg.revivalVolSpikeRatio && Number.isFinite(rise) && rise >= cfg.revivalPriceChangePct) {
     trigger = "dormant";
   } else if (breakoutPct !== null && breakoutPct >= cfg.revivalBreakoutPct) {
     trigger = "breakout";
@@ -78,7 +88,9 @@ export function detectRevival(ctx: DetectorContext, cfg: Config): Detection | nu
 
   const ratioText = Number.isFinite(ratio) ? `${ratio.toFixed(1)}x` : "∞";
   const reason =
-    trigger === "breakout"
+    trigger === "reignite"
+      ? `全盛期 $${Math.round(peakVol).toLocaleString("en-US")}/h の銘柄がレンジを +${breakoutPct!.toFixed(0)}% 上抜け`
+      : trigger === "breakout"
       ? `レンジ上限を +${breakoutPct!.toFixed(0)}% 上抜け`
       : trigger === "fast"
         ? `5 分で +${(m5 ?? 0).toFixed(0)}% の急変`
@@ -96,6 +108,9 @@ export function detectRevival(ctx: DetectorContext, cfg: Config): Detection | nu
       viaFastLane: trigger === "fast",
       breakoutPct,
       trigger,
+      peakVolH1: peakVol > 0 ? peakVol : null,
+      peakAgoMs: ctx.peakVolAt ? now - ctx.peakVolAt : null,
+      cooledRatio,
     },
   };
 }

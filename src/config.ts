@@ -56,6 +56,12 @@ export interface Config {
   revivalBaseWindowMin: number;
   revivalBreakoutPct: number;
   revivalRangeExcludeMin: number;
+  reigniteEnabled: boolean;
+  reigniteMinPeakVolUsd: number;
+  reigniteCooledRatio: number;
+  reigniteBreakoutPct: number;
+  priorityPeakVolUsd: number;
+  priorityPollIntervalSec: number;
   revivalCooldownMin: number;
   revivalEscalationPct: number;
 
@@ -217,6 +223,12 @@ export function buildConfig(env: Env, strict = true): Config {
     revivalBaseWindowMin: num(env, "REVIVAL_BASE_WINDOW_MIN", 1440),
     revivalBreakoutPct: num(env, "REVIVAL_BREAKOUT_PCT", 12),
     revivalRangeExcludeMin: num(env, "REVIVAL_RANGE_EXCLUDE_MIN", 30),
+    reigniteEnabled: bool(env, "REIGNITE_ENABLED", true),
+    reigniteMinPeakVolUsd: num(env, "REIGNITE_MIN_PEAK_VOL_USD", 300_000),
+    reigniteCooledRatio: num(env, "REIGNITE_COOLED_RATIO", 0.5),
+    reigniteBreakoutPct: num(env, "REIGNITE_BREAKOUT_PCT", 6),
+    priorityPeakVolUsd: num(env, "PRIORITY_PEAK_VOL_USD", 300_000),
+    priorityPollIntervalSec: num(env, "PRIORITY_POLL_INTERVAL_SEC", 45),
     revivalCooldownMin: num(env, "REVIVAL_COOLDOWN_MIN", 180),
     revivalEscalationPct: num(env, "REVIVAL_ESCALATION_PCT", 50),
 
@@ -236,7 +248,7 @@ export function buildConfig(env: Env, strict = true): Config {
     txnSkewShow: num(env, "TXN_SKEW_SHOW", 0.65),
 
     dbPath: str(env, "DB_PATH", "./data/bot.sqlite"),
-    snapshotRetentionHours: num(env, "SNAPSHOT_RETENTION_HOURS", 48),
+    snapshotRetentionHours: num(env, "SNAPSHOT_RETENTION_HOURS", 72),
     logLevel,
     notifyOnStart: bool(env, "NOTIFY_ON_START", true),
   };

@@ -290,6 +290,34 @@ export class Engine {
     return quiet > 10 * MINUTE_MS ? quiet : null;
   }
 
+  /**
+   * 全盛期が大きかった銘柄を、いま静かでも短い間隔で見に行く。
+   * 再点火はこういう銘柄から起きるので、dormant と同じ 4 分間隔では遅すぎる。
+   */
+  async refreshPriority(intervalSec: number, maxPairs = 300): Promise<number> {
+    const now = this.now();
+    const rows = this.store.listPriorityForRefresh(this.cfg.priorityPeakVolUsd, now - intervalSec * 1000, maxPairs);
+    if (rows.length === 0) return 0;
+    const pairs = await this.dex.getPairs(
+      this.cfg.chainId,
+      rows.map((r) => r.pair_address),
+    );
+    const byAddr = new Map(pairs.map((x) => [x.pairAddress.toLowerCase(), x]));
+    for (const r of rows) {
+      const p = byAddr.get(r.pair_address);
+      if (!p) {
+        this.store.markMissed(r.pair_address, now);
+        continue;
+      }
+      this.store.upsertPair(p, r.source, now);
+      this.store.insertSnapshot(p, now);
+      this.classify(p, now);
+      await this.evaluate(p, now);
+    }
+    log.debug(`refresh(priority): ${rows.length} 件`);
+    return rows.length;
+  }
+
   /** tier の再分類 */
   classify(p: DexPair, now: number): Tier {
     const age = pairAgeMs(p, now);
@@ -306,6 +334,7 @@ export class Engine {
   /** 検知器を実行し、必要ならアラート送信 */
   async evaluate(p: DexPair, now: number): Promise<Detection[]> {
     const age = pairAgeMs(p, now);
+    const row = this.store.getPair(p.pairAddress);
     const token = p.baseToken.address.toLowerCase();
     const out: Detection[] = [];
 
@@ -325,6 +354,8 @@ export class Engine {
         baseLowPrice: this.store.minPriceSince(p.pairAddress, now - this.cfg.revivalBaseWindowMin * MINUTE_MS),
         rangeHighPrice: this.measureRangeHigh(p, now),
         quietMs: this.measureQuiet(p, now),
+        peakVolH1: row?.peak_vol_h1 ?? 0,
+        peakVolAt: row?.peak_vol_at ?? null,
       },
       this.cfg,
     );
