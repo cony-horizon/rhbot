@@ -44,6 +44,7 @@ export interface Config {
   newMaxAgeHours: number;
   newVolH1TiersUsd: number[];
   newMinBuysH1: number;
+  newMinMcUsd: number;
 
   revivalEnabled: boolean;
   revivalMinAgeHours: number;
@@ -215,6 +216,7 @@ export function buildConfig(env: Env, strict = true): Config {
     newMaxAgeHours: num(env, "NEW_MAX_AGE_HOURS", 12),
     newVolH1TiersUsd: numList(env, "NEW_VOL_H1_TIERS_USD", [25_000, 100_000, 500_000]),
     newMinBuysH1: num(env, "NEW_MIN_BUYS_H1", 15),
+    newMinMcUsd: num(env, "NEW_MIN_MC_USD", 1_000_000),
 
     revivalEnabled: bool(env, "REVIVAL_ENABLED", true),
     revivalMinAgeHours: num(env, "REVIVAL_MIN_AGE_HOURS", 6),

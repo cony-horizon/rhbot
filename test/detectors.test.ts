@@ -214,3 +214,47 @@ describe("detectRevival — 平常値の見積もり", () => {
     expect(d?.metrics.volSpikeRatio).toBeCloseTo(20_000 / ((60_000 - 20_000) / 6), 1);
   });
 });
+
+describe("detectNewLaunch — 時価総額の下限", () => {
+  function launch(mc: number | undefined, fdv?: number) {
+    const p = makePair({ ageHours: 2, volH1: 60_000, volH24: 150_000, liq: 45_000, buysH1: 90, sellsH1: 40 });
+    p.marketCap = mc as number;
+    p.fdv = fdv as number;
+    return p;
+  }
+  const run = (p: ReturnType<typeof launch>, c = cfg) =>
+    detectNewLaunch({ now: NOW, pair: p, ageMs: 2 * H, lastAlert: null, lookbackMinPrice: null }, c);
+
+  it("$1M 以上なら通知する", () => {
+    expect(run(launch(1_200_000, 1_200_000))).not.toBeNull();
+  });
+
+  it("$1M 未満は通知しない（出来高の条件を満たしていても）", () => {
+    expect(run(launch(400_000, 400_000))).toBeNull();
+  });
+
+  it("ちょうど $1M は通知する", () => {
+    expect(run(launch(1_000_000, 1_000_000))).not.toBeNull();
+  });
+
+  it("marketCap が無ければ fdv で判定する", () => {
+    expect(run(launch(undefined, 1_500_000))).not.toBeNull();
+    expect(run(launch(undefined, 300_000))).toBeNull();
+  });
+
+  it("どちらも取れない銘柄は規模を判断できないので通さない", () => {
+    expect(run(launch(undefined, undefined))).toBeNull();
+  });
+
+  it("下限は設定で変えられる", () => {
+    expect(run(launch(400_000, 400_000), makeConfig({ NEW_MIN_MC_USD: "100000" }))).not.toBeNull();
+    expect(run(launch(3_000_000, 3_000_000), makeConfig({ NEW_MIN_MC_USD: "5000000" }))).toBeNull();
+  });
+
+  it("再点火（時価総額ベース）はこの下限の影響を受けない", () => {
+    // 新規ローンチの下限は新規側だけの条件で、復活系の判定には関わらない
+    const c = makeConfig({ NEW_MIN_MC_USD: "50000000" });
+    expect(c.newMinMcUsd).toBe(50_000_000);
+    expect(c.reigniteMinPeakMcUsd).toBe(2_000_000);
+  });
+});

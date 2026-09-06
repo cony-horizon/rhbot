@@ -4,7 +4,8 @@ import type { Detection, DetectorContext } from "./types.js";
 
 /**
  * ① 新規ローンチ検知
- * ペア作成から NEW_MAX_AGE_HOURS 以内で、1h 出来高が段階しきい値を超えるたびに 1 回通知する。
+ * ペア作成から NEW_MAX_AGE_HOURS 以内で、時価総額が NEW_MIN_MC_USD 以上あり、
+ * 1h 出来高が段階しきい値を超えるたびに 1 回通知する。
  */
 export function detectNewLaunch(ctx: DetectorContext, cfg: Config): Detection | null {
   if (!cfg.newLaunchEnabled) return null;
@@ -15,6 +16,11 @@ export function detectNewLaunch(ctx: DetectorContext, cfg: Config): Detection | 
 
   const m = baseMetrics(pair);
   if (m.buysH1 < cfg.newMinBuysH1) return null;
+
+  // 時価総額の下限。開発の重心は再点火に置いているので、新規は規模のあるものだけに絞る。
+  // 時価総額が取れない銘柄は規模を判断できないため、ここでは通さない。
+  const mc = pair.marketCap && pair.marketCap > 0 ? pair.marketCap : (pair.fdv ?? 0);
+  if (mc < cfg.newMinMcUsd) return null;
 
   const tiers = cfg.newVolH1TiersUsd;
   if (tiers.length === 0) return null;

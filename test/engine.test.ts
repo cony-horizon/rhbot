@@ -309,8 +309,10 @@ describe("Engine — スキャム除外", () => {
     return p;
   }
 
+  // 報告された $PUMPS は MC $855K で、新規ローンチの下限($1M)にも掛かる。
+  // ここで見たいのはスキャム除外そのものなので、下限を外して切り分ける
   it("バンドル銘柄は通知せず、履歴には理由付きで残る", async () => {
-    const { dex, sent, store, engine } = setup();
+    const { dex, sent, store, engine } = setup({ NEW_MIN_MC_USD: "0" });
     dex.searchResults = [bundled()];
     await engine.discover();
 
@@ -326,14 +328,14 @@ describe("Engine — スキャム除外", () => {
   });
 
   it("フィルタを切れば通知される", async () => {
-    const { dex, sent, engine } = setup({ SCAM_FILTER_ENABLED: "false" });
+    const { dex, sent, engine } = setup({ SCAM_FILTER_ENABLED: "false", NEW_MIN_MC_USD: "0" });
     dex.searchResults = [bundled()];
     await engine.discover();
     expect(sent).toHaveLength(1);
   });
 
   it("しきい値を上げれば通知される", async () => {
-    const { dex, sent, engine } = setup({ SCAM_SCORE_THRESHOLD: "99" });
+    const { dex, sent, engine } = setup({ SCAM_SCORE_THRESHOLD: "99", NEW_MIN_MC_USD: "0" });
     dex.searchResults = [bundled()];
     await engine.discover();
     expect(sent).toHaveLength(1);
@@ -342,8 +344,8 @@ describe("Engine — スキャム除外", () => {
   it("健全な銘柄はこれまで通り通知される", async () => {
     const { dex, sent, engine } = setup();
     const good = makePair({ ageHours: 3, volH1: 60_000, volH24: 150_000, liq: 45_000, buysH1: 90, sellsH1: 60 });
-    good.fdv = 600_000;
-    good.marketCap = 600_000;
+    good.fdv = 2_400_000;
+    good.marketCap = 2_400_000;
     dex.searchResults = [good];
     await engine.discover();
     expect(sent).toHaveLength(1);
@@ -372,8 +374,8 @@ describe("Engine — スキャム除外", () => {
     const { dex, sent, engine } = setup();
     // リスク 12（薄めの流動性）だけ立つ銘柄。表示しきい値を 10 に下げて確認する
     const p = makePair({ ageHours: 3, volH1: 60_000, volH24: 150_000, liq: 30_000, buysH1: 90, sellsH1: 60 });
-    p.fdv = 1_000_000;
-    p.marketCap = 1_000_000;
+    p.fdv = 1_200_000;
+    p.marketCap = 1_200_000;
     const { dex: d2, sent: s2, engine: e2 } = setup({ SCAM_SHOW_SCORE_FROM: "10" });
     d2.searchResults = [p];
     await e2.discover();

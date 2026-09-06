@@ -52,8 +52,10 @@ export function makePair(o: PairOpts = {}): DexPair {
     volume: { m5: o.volM5 ?? 0, h1: volH1, h6: o.volH6 ?? volH1, h24: volH24 },
     priceChange: { m5: o.changeM5 ?? 0, h1: o.changeH1 ?? 0, h6: 0, h24: 0 },
     liquidity: { usd: o.liq ?? 20_000, base: 0, quote: 0 },
-    fdv: 500_000,
-    marketCap: 500_000,
+    // 新規ローンチの時価総額下限($1M)より上を既定にする。
+    // 各テストの主題は時価総額ではないので、ここで引っかからないようにしておく
+    fdv: 2_000_000,
+    marketCap: 2_000_000,
     pairCreatedAt: NOW - (o.ageHours ?? 1) * H,
   };
 }
