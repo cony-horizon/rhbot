@@ -13,7 +13,8 @@
     "build": "node scripts/preflight.mjs && tsc -p tsconfig.json",
     "typecheck": "node scripts/preflight.mjs && tsc -p tsconfig.json --noEmit",
     "test": "node scripts/preflight.mjs && vitest run",
-    "probe": "node scripts/preflight.mjs && tsx src/tools/probe.ts"
+    "probe": "node scripts/preflight.mjs && tsx src/tools/probe.ts",
+    "update": "node scripts/update.mjs"
   },
   "devDependencies": {
     "@types/node": "^22.10.0",

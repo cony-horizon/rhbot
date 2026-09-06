@@ -136,7 +136,20 @@ npm run probe               # DexScreener 検索・トークンプール・RPC �
 > 各 npm script の先頭に `scripts/preflight.mjs` が入っており、依存パッケージの欠落を検出して
 > `npm install --include=dev` で自動復旧します。
 
-### 3. 起動
+### 3. 更新
+
+GitHub 側を更新しても手元のファイルは自動では変わらない。取得からビルドまでは次の 1 コマンド。
+`.env` と `data/` には触れないので、設定と蓄積した履歴は残る。
+
+```bash
+npm run update   # git pull → npm install → build
+npm start
+```
+
+ZIP で取得したフォルダには git の情報が無いため、この方法は使えない。
+その場合は `npm run update` が clone し直す手順を案内する。
+
+### 4. 起動
 
 ```bash
 npm run dev      # 開発（ファイル変更で自動再起動）
