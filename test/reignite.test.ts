@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { detectRevival } from "../src/detectors/revival.js";
+import { toRange } from "../src/detectors/range.js";
 import { Engine } from "../src/engine.js";
 import { Store } from "../src/store.js";
 import { NOW, makeConfig, makePair } from "./helpers.js";
@@ -29,6 +30,10 @@ function pastGlory(mc: number, volH1 = 180_000) {
   return p;
 }
 
+/** $1.0M〜指定上限で 30 時間ヨコヨコしたレンジを作る */
+const band = (high: number | null, low = 1_000_000) =>
+  high === null ? null : toRange({ high, low, samples: 40, firstTs: NOW - 30 * H, lastTs: NOW }, cfg);
+
 /** レンジ上限 $1.5M、底 $1.0M、全盛期 $5M */
 const ctx = (mc: number, rangeHighMc: number | null, peakMc: number, volH1 = 180_000) => ({
   now: NOW,
@@ -38,7 +43,7 @@ const ctx = (mc: number, rangeHighMc: number | null, peakMc: number, volH1 = 180
   lookbackMinPrice: 0.0000009,
   baseLowPrice: 0.0000008,
   rangeHighPrice: null,
-  rangeHighMc,
+  mcRange: band(rangeHighMc),
   baseLowMc: 1_000_000,
   quietMs: 20 * H,
   peakMc,
@@ -70,8 +75,9 @@ describe("再点火（元大物のレンジ抜け）", () => {
   });
 
   it("まだ冷えていない（全盛期に近い）銘柄は再点火ではない", () => {
-    // いま MC $4.5M = 全盛期の 90%
-    const d = detectRevival(ctx(4_500_000, 4_200_000, 5_000_000), cfg);
+    // いま MC $4.8M = 全盛期の 96%。レンジ $4.0〜4.5M を抜けていても冷え込み条件を満たさない
+    const range = toRange({ high: 4_500_000, low: 4_000_000, samples: 40, firstTs: NOW - 30 * H, lastTs: NOW }, cfg);
+    const d = detectRevival({ ...ctx(4_800_000, null, 5_000_000), mcRange: range, baseLowMc: 4_000_000 }, cfg);
     expect(d?.display.trigger).not.toBe("reignite");
   });
 
