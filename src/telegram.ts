@@ -23,6 +23,39 @@ export class TelegramError extends Error {
   }
 }
 
+/** Telegram まで届かなかった（＝トークンの問題ではない）通信エラー */
+export class TelegramNetworkError extends Error {
+  constructor(
+    message: string,
+    public readonly detail: string,
+  ) {
+    super(message);
+    this.name = "TelegramNetworkError";
+  }
+}
+
+/**
+ * fetch の失敗は "TypeError: fetch failed" としか出ず、本当の理由は cause に埋まっている。
+ * 利用者が対処を判断できるように、そこまで掘って短い説明にする。
+ */
+export function describeNetworkError(err: unknown): string {
+  const seen = new Set<unknown>();
+  let cur: unknown = err;
+  const parts: string[] = [];
+  while (cur instanceof Error && !seen.has(cur)) {
+    seen.add(cur);
+    if (cur instanceof TelegramNetworkError) {
+      // 既に調査済みの詳細を持っているので、それをそのまま活かす
+      parts.push(cur.detail ? `${cur.message} / ${cur.detail}` : cur.message);
+    } else {
+      const code = (cur as NodeJS.ErrnoException).code;
+      parts.push(code ? `${cur.message} (${code})` : cur.message);
+    }
+    cur = (cur as { cause?: unknown }).cause;
+  }
+  return parts.join(" ← ") || String(err);
+}
+
 export class TelegramClient {
   private readonly base: string;
   constructor(
@@ -32,7 +65,29 @@ export class TelegramClient {
     this.base = `https://api.telegram.org/bot${token}`;
   }
 
+  /**
+   * ネットワーク起因の失敗だけ再試行する。
+   * 接続の使い回しが途中で切られると 2 回目以降の呼び出しだけが fetch failed になることがあり、
+   * 張り直せば通るため。Telegram が返したエラー(4xx)は再試行しても無駄なのでそのまま投げる。
+   */
   private async call<T>(method: string, payload: Record<string, unknown>, timeoutMs = 30_000): Promise<T> {
+    let last: unknown;
+    for (let attempt = 1; attempt <= 3; attempt++) {
+      try {
+        return await this.callOnce<T>(method, payload, timeoutMs);
+      } catch (err) {
+        if (err instanceof TelegramError) throw err;
+        last = err;
+        if (attempt < 3) {
+          log.warn(`Telegram ${method} 通信失敗 (${attempt}/3) — 再試行します: ${describeNetworkError(err)}`);
+          await new Promise((r) => setTimeout(r, 1000 * attempt));
+        }
+      }
+    }
+    throw new TelegramNetworkError(`Telegram (${method}) に接続できませんでした`, describeNetworkError(last));
+  }
+
+  private async callOnce<T>(method: string, payload: Record<string, unknown>, timeoutMs: number): Promise<T> {
     const ctrl = new AbortController();
     const timer = setTimeout(() => ctrl.abort(), timeoutMs);
     try {
@@ -47,7 +102,13 @@ export class TelegramClient {
       try {
         body = JSON.parse(text);
       } catch {
-        throw new TelegramError(`Telegram API から非 JSON 応答 (HTTP ${res.status}): ${text.slice(0, 120)}`, res.status);
+        // Telegram API は必ず JSON を返す。JSON でないということは Telegram まで届いておらず、
+        // 途中のプロキシ・ファイアウォール・VPN・キャプティブポータルが応答している。
+        // トークンの問題ではないので、通信エラーとして扱う。
+        throw new TelegramNetworkError(
+          "Telegram ではない何かが応答しました（通信が遮断されている可能性があります）",
+          `HTTP ${res.status}: ${text.slice(0, 200).replace(/\s+/g, " ").trim()}`,
+        );
       }
       if (!body.ok) {
         const err = new TelegramError(body.description ?? `HTTP ${res.status}`, body.error_code);
@@ -85,7 +146,7 @@ export class TelegramClient {
           await this.call("sendMessage", { chat_id: chatId, text: stripTags(html) });
           return;
         }
-        if (attempt === 3) throw err;
+        if (attempt === 3 || err instanceof TelegramNetworkError) throw err;
         await new Promise((r) => setTimeout(r, 1000 * attempt));
       }
     }

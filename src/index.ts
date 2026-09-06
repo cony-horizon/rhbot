@@ -6,7 +6,7 @@ import { log, setLogLevel } from "./logger.js";
 import { RpcClient } from "./rpc.js";
 import { every, type ScheduledTask } from "./scheduler.js";
 import { Store } from "./store.js";
-import { CommandLoop, TelegramClient } from "./telegram.js";
+import { CommandLoop, TelegramClient, TelegramError, TelegramNetworkError } from "./telegram.js";
 
 const COMMANDS = [
   { command: "status", description: "監視状況を表示" },
@@ -67,13 +67,42 @@ async function main(): Promise<void> {
   };
   const engine = new Engine(cfg, store, dex, sink, rpc);
 
+  // 認証の確認。ここが通ればトークンは正しい。
   try {
     const me = await tg.getMe();
     log.info(`Telegram bot: @${me.username ?? me.id}`);
+  } catch (err) {
+    if (err instanceof TelegramNetworkError) {
+      throw new ConfigError("Telegram に接続できませんでした（トークンの問題ではありません）", [
+        `詳細: ${err.detail}`,
+        "",
+        "インターネット接続を確認してから、もう一度  npm start  を実行してください。",
+        "",
+        "・VPN を使っている場合は切って試してください",
+        "・社内や学校のネットワークでは api.telegram.org が遮断されていることがあります",
+        "・スマホのテザリングで試すと、ネットワーク側の問題か切り分けられます",
+      ]);
+    }
+    if (err instanceof TelegramError && err.code === 401) {
+      throw new ConfigError("Telegram にトークンを拒否されました", [
+        ".env の TELEGRAM_BOT_TOKEN が正しくありません。",
+        "Telegram の @BotFather に /mybots と送り、自分のボットを選んで",
+        "「API Token」から正しい文字列をコピーし直してください。",
+      ]);
+    }
+    throw err;
+  }
+
+  // コマンド一覧の登録は Telegram の入力補助のためだけのもの。
+  // 失敗してもコマンド自体は手で打てば動くので、起動を止める理由にはならない。
+  try {
     await tg.setMyCommands(COMMANDS);
   } catch (err) {
-    log.error("Telegram への接続に失敗しました。TELEGRAM_BOT_TOKEN を確認してください", err);
-    throw err;
+    log.warn(
+      `コマンド一覧の登録に失敗しました（動作に支障はありません）: ${
+        err instanceof TelegramNetworkError ? err.detail : err instanceof Error ? err.message : String(err)
+      }`,
+    );
   }
 
   const commands = new CommandLoop(
