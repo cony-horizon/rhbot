@@ -60,6 +60,10 @@ export interface Config {
   reigniteMinPeakMcUsd: number;
   reigniteCooledRatio: number;
   reigniteBreakoutPct: number;
+  rangeWindowHours: number;
+  rangeMinHours: number;
+  rangeMaxWidthPct: number;
+  rangeMinSamples: number;
   priorityPeakMcUsd: number;
   priorityPollIntervalSec: number;
   revivalCooldownMin: number;
@@ -224,10 +228,14 @@ export function buildConfig(env: Env, strict = true): Config {
     revivalBreakoutPct: num(env, "REVIVAL_BREAKOUT_PCT", 12),
     revivalRangeExcludeMin: num(env, "REVIVAL_RANGE_EXCLUDE_MIN", 30),
     reigniteEnabled: bool(env, "REIGNITE_ENABLED", true),
-    reigniteMinPeakMcUsd: num(env, "REIGNITE_MIN_PEAK_MC_USD", 1_000_000),
-    reigniteCooledRatio: num(env, "REIGNITE_COOLED_RATIO", 0.5),
+    reigniteMinPeakMcUsd: num(env, "REIGNITE_MIN_PEAK_MC_USD", 2_000_000),
+    reigniteCooledRatio: num(env, "REIGNITE_COOLED_RATIO", 0.8),
     reigniteBreakoutPct: num(env, "REIGNITE_BREAKOUT_PCT", 6),
-    priorityPeakMcUsd: num(env, "PRIORITY_PEAK_MC_USD", 1_000_000),
+    rangeWindowHours: num(env, "RANGE_WINDOW_HOURS", 48),
+    rangeMinHours: num(env, "RANGE_MIN_HOURS", 12),
+    rangeMaxWidthPct: num(env, "RANGE_MAX_WIDTH_PCT", 60),
+    rangeMinSamples: num(env, "RANGE_MIN_SAMPLES", 20),
+    priorityPeakMcUsd: num(env, "PRIORITY_PEAK_MC_USD", 2_000_000),
     priorityPollIntervalSec: num(env, "PRIORITY_POLL_INTERVAL_SEC", 45),
     revivalCooldownMin: num(env, "REVIVAL_COOLDOWN_MIN", 180),
     revivalEscalationPct: num(env, "REVIVAL_ESCALATION_PCT", 50),
@@ -248,7 +256,7 @@ export function buildConfig(env: Env, strict = true): Config {
     txnSkewShow: num(env, "TXN_SKEW_SHOW", 0.65),
 
     dbPath: str(env, "DB_PATH", "./data/bot.sqlite"),
-    snapshotRetentionHours: num(env, "SNAPSHOT_RETENTION_HOURS", 72),
+    snapshotRetentionHours: num(env, "SNAPSHOT_RETENTION_HOURS", 96),
     logLevel,
     notifyOnStart: bool(env, "NOTIFY_ON_START", true),
   };

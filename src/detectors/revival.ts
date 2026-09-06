@@ -56,10 +56,11 @@ export function detectRevival(ctx: DetectorContext, cfg: Config): Detection | nu
   const hasPedigree = cfg.reigniteEnabled && peakMc >= cfg.reigniteMinPeakMcUsd;
   const cooled = cooledRatio !== null && cooledRatio <= cfg.reigniteCooledRatio;
 
-  // 時価総額で見たレンジ上限をどれだけ超えたか。
-  // 利用者が実際に眺めているのは時価総額なので、判定も表示もその単位で揃える。
-  const rangeHighMc = ctx.rangeHighMc ?? null;
-  const mcBreakoutPct = rangeHighMc !== null && rangeHighMc > 0 && currentMc > 0 ? (currentMc / rangeHighMc - 1) * 100 : null;
+  // 成立したヨコヨコの帯を、どれだけ上抜けたか。
+  // 「窓内の最大値」ではなく「帯として成立しているか」を確かめてから使うので、
+  // 下落途中の一点を天井と取り違えることがない。
+  const mcRange = ctx.mcRange ?? null;
+  const mcBreakoutPct = mcRange !== null && currentMc > 0 ? (currentMc / mcRange.high - 1) * 100 : null;
 
   // 成立経路を判定する。確度の高い順に見る
   const m5 = m.priceChangeM5;
@@ -125,7 +126,7 @@ export function detectRevival(ctx: DetectorContext, cfg: Config): Detection | nu
       peakMc: peakMc > 0 ? peakMc : null,
       peakAgoMs: ctx.peakMcAt ? now - ctx.peakMcAt : null,
       cooledRatio,
-      rangeHighMc,
+      mcRange,
       currentMc: currentMc > 0 ? currentMc : null,
     },
   };

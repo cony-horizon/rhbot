@@ -421,6 +421,28 @@ export class Store {
       );
   }
 
+  /**
+   * 指定区間の時価総額の上下と、観測の広がりをまとめて返す。
+   * 「レンジを組んでいるか」を判定するには最大値だけでは足りず、
+   * 下限・観測期間・件数を揃えて見る必要がある。
+   */
+  mcRangeBetween(
+    pairAddress: string,
+    fromTs: number,
+    toTs: number,
+  ): { high: number; low: number; samples: number; firstTs: number; lastTs: number } | null {
+    const row = this.db
+      .prepare(
+        `SELECT MAX(market_cap) AS hi, MIN(market_cap) AS lo, COUNT(*) AS n, MIN(ts) AS t0, MAX(ts) AS t1
+         FROM snapshots WHERE pair_address = ? AND ts >= ? AND ts <= ? AND market_cap > 0`,
+      )
+      .get(pairAddress.toLowerCase(), fromTs, toTs) as
+      | { hi: number | null; lo: number | null; n: number; t0: number | null; t1: number | null }
+      | undefined;
+    if (!row || row.hi === null || row.lo === null || row.lo <= 0 || row.t0 === null || row.t1 === null) return null;
+    return { high: row.hi, low: row.lo, samples: row.n, firstTs: row.t0, lastTs: row.t1 };
+  }
+
   /** 指定区間の最高時価総額。ヨコヨコのレンジ上限を時価総額で測るために使う */
   maxMcBetween(pairAddress: string, fromTs: number, toTs: number): number | null {
     const row = this.db

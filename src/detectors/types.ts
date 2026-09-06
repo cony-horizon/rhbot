@@ -1,5 +1,6 @@
 import type { DexPair } from "../dexscreener.js";
 import type { AlertKind, AlertRow } from "../store.js";
+import type { RangeInfo } from "./range.js";
 
 export interface DetectorContext {
   now: number;
@@ -20,8 +21,8 @@ export interface DetectorContext {
   peakMc?: number;
   /** 全盛期を記録した時刻 */
   peakMcAt?: number | null;
-  /** 直近の値動きを除いた、ヨコヨコ期間の時価総額の上限 */
-  rangeHighMc?: number | null;
+  /** 成立が確認できたヨコヨコの帯（時価総額）。組めていなければ null */
+  mcRange?: RangeInfo | null;
   /** ヨコヨコ期間の時価総額の底 */
   baseLowMc?: number | null;
 }
@@ -71,8 +72,8 @@ export interface DetectionDisplay {
   peakAgoMs?: number | null;
   /** 再点火: いまの時価総額が全盛期の何割か */
   cooledRatio?: number | null;
-  /** 再点火: 抜けたレンジの上限（時価総額） */
-  rangeHighMc?: number | null;
+  /** 再点火: 抜けたレンジ（時価総額） */
+  mcRange?: RangeInfo | null;
   /** 現在の時価総額 */
   currentMc?: number | null;
 }

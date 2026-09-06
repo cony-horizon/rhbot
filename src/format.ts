@@ -158,7 +158,7 @@ function revivalLines(d: Detection, p: DexPair, ageMs: number | null, view: Aler
     const peak = d.display.peakMc ?? 0;
     const ago = d.display.peakAgoMs;
     const nowMc = d.display.currentMc ?? 0;
-    const rangeMc = d.display.rangeHighMc ?? 0;
+    const range = d.display.mcRange ?? null;
     const cooled = d.display.cooledRatio;
     lines.push(
       `全盛期 MC <b>${fmtUsd(peak)}</b>${ago ? `（${fmtAge(ago)}前）` : ""} → いま <b>${fmtUsd(nowMc)}</b>${
@@ -167,8 +167,11 @@ function revivalLines(d: Detection, p: DexPair, ageMs: number | null, view: Aler
     );
     // 再点火は時価総額で判定しているので、上抜け率も時価総額基準のものを出す
     const mcBo = d.display.mcBreakoutPct;
-    if (rangeMc > 0 && mcBo !== null && mcBo !== undefined) {
-      lines.push(`レンジ上限 ${fmtUsd(rangeMc)} を <b>${fmtPct(mcBo)}</b> 上抜け`);
+    if (range && mcBo !== null && mcBo !== undefined) {
+      lines.push(
+        `レンジ ${fmtUsd(range.low)}〜${fmtUsd(range.high)} を <b>${fmtPct(mcBo)}</b> 上抜け`,
+      );
+      lines.push(`　（幅 ${range.widthPct.toFixed(0)}% で ${fmtAge(range.durationMs)} 形成）`);
     }
     if (rise !== null && rise !== undefined) lines.push(`底値から <b>${fmtPct(rise)}</b>`);
   } else if (t === "breakout" && bo !== null && bo !== undefined) {
