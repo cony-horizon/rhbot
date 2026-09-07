@@ -224,6 +224,66 @@ describe("assessBreadth — 必須条件", () => {
   });
 });
 
+/**
+ * 利用者が報告した実物: $QC (Quantum Cats, 0xF2E122a4…)
+ * MC $175.8K でコールされ、その後 $2M まで伸びた。
+ *
+ * 通知時点の実測値。時価総額の下限を $200K に置いていたら取り逃がしていたので、
+ * この数字をそのまま固定して、下限をいじったときに気づけるようにしておく。
+ */
+function quantumCats() {
+  const p = makePair({
+    symbol: "QC",
+    ageHours: 34 / 60,
+    price: 0.0001768,
+    volH1: 653_448,
+    volH24: 653_448,
+    liq: 38_200,
+    buysH1: 3201,
+    sellsH1: 2691,
+    changeH1: 239,
+    changeM5: -21.5,
+  });
+  p.fdv = 175_800;
+  p.marketCap = 175_800;
+  return p;
+}
+
+describe("$QC — 実物の勝ちコールを取り逃がさない", () => {
+  it("低MC レーンで検知できる", () => {
+    const d = detectNewLaunch(
+      { now: NOW, pair: quantumCats(), ageMs: 34 * 60_000, lastAlert: null, lookbackMinPrice: null },
+      cfg,
+    );
+    expect(d).not.toBeNull();
+    expect(d!.display.trigger).toBe("new_lowmc");
+  });
+
+  it("スキャム判定に一切引っかからない（厚みが 3/3 で揃う）", () => {
+    const a = assessScam(quantumCats(), cfg, NOW);
+    expect(a.breadth.organic).toBe(true);
+    expect(a.breadth.points).toBe(3);
+    expect(a.signals).toHaveLength(0);
+    expect(a.score).toBe(0);
+  });
+
+  it("通知の条件それぞれに余裕がある（どれか 1 つの微調整で落ちない）", () => {
+    const p = quantumCats();
+    const mc = 175_800;
+    expect(mc).toBeGreaterThan(cfg.newLowMcFloorUsd);
+    expect(653_448 / mc).toBeGreaterThan(cfg.newLowMcVolToMcRatio);
+    expect(38_200).toBeGreaterThan(cfg.newLowMcMinLiquidityUsd);
+    expect(assessBreadth(p, cfg).txns).toBeGreaterThan(cfg.scamBreadthSmallMinTxns);
+  });
+
+  it("時価総額の下限を $200K に戻すと取り逃がす（下限を上げるときの警告）", () => {
+    const strict = makeConfig({ NEW_LOW_MC_FLOOR_USD: "200000" });
+    expect(
+      detectNewLaunch({ now: NOW, pair: quantumCats(), ageMs: 34 * 60_000, lastAlert: null, lookbackMinPrice: null }, strict),
+    ).toBeNull();
+  });
+});
+
 describe("低時価総額レーン — 出来高が伴う小型を通す", () => {
   /**
    * 利用者が報告した型: $150K〜$200K でコールされ、$2M まで伸びた銘柄。
