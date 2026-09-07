@@ -178,20 +178,39 @@ function insights(judged: Judged[], cfg: Config): Insight[] {
       groups.set(key, g);
     }
   }
+  // 属性ごとにまとめる。同じ属性の 2 分類は互いの裏表なので、別々の行にせず 1 行で対比する
+  const byAttr = new Map<string, { attr: Attr; n: number; hits: number }[]>();
+  for (const g of groups.values()) byAttr.set(g.attr.name, [...(byAttr.get(g.attr.name) ?? []), g]);
+
+  const pct = (h: number, n: number) => Math.round((h / n) * 100);
+  const hint = (knob: string, diff: number) =>
+    knob.startsWith("（参考") ? "（設定ではなく参考情報）" : `${diff > 0 ? "増やす方向" : "絞る方向"}で見直す候補: ${knob}`;
+
   const out: Insight[] = [];
-  for (const g of groups.values()) {
-    const restN = judged.length - g.n;
-    if (g.n < cfg.reportMinSamples || restN < cfg.reportMinSamples) continue;
-    const r = g.hits / g.n;
-    const rest = (totalHits - g.hits) / restN;
-    const diff = (r - rest) * 100;
-    if (Math.abs(diff) < 20) continue;
-    const dir = diff > 0 ? "高い" : "低い";
-    const verb = diff > 0 ? "増やす方向" : "絞る方向";
-    out.push({
-      text: `${g.attr.name}「${g.attr.bucket}」の的中 ${Math.round(r * 100)}%（${g.n}件） vs それ以外 ${Math.round(rest * 100)}% → ${dir}。${verb}で見直す候補: ${g.attr.knob}`,
-      weight: Math.abs(diff) * Math.sqrt(g.n),
-    });
+  for (const list of byAttr.values()) {
+    const eligible = list.filter((g) => g.n >= cfg.reportMinSamples);
+    if (eligible.length === 2 && eligible.length === list.length) {
+      const [a, b] = [...eligible].sort((x, y) => y.hits / y.n - x.hits / x.n) as [typeof eligible[number], typeof eligible[number]];
+      const diff = (a.hits / a.n - b.hits / b.n) * 100;
+      if (diff < 20) continue;
+      out.push({
+        text: `${a.attr.name}: 「${a.attr.bucket}」${pct(a.hits, a.n)}%（${a.n}件） vs 「${b.attr.bucket}」${pct(b.hits, b.n)}%（${b.n}件）。${hint(b.attr.knob, -diff)}`,
+        weight: diff * Math.sqrt(Math.min(a.n, b.n)),
+      });
+      continue;
+    }
+    for (const g of eligible) {
+      const restN = judged.length - g.n;
+      if (restN < cfg.reportMinSamples) continue;
+      const r = g.hits / g.n;
+      const rest = (totalHits - g.hits) / restN;
+      const diff = (r - rest) * 100;
+      if (Math.abs(diff) < 20) continue;
+      out.push({
+        text: `${g.attr.name}「${g.attr.bucket}」の的中 ${Math.round(r * 100)}%（${g.n}件） vs それ以外 ${Math.round(rest * 100)}% → ${diff > 0 ? "高い" : "低い"}。${hint(g.attr.knob, diff)}`,
+        weight: Math.abs(diff) * Math.sqrt(g.n),
+      });
+    }
   }
   return out.sort((a, b) => b.weight - a.weight).slice(0, 4);
 }
