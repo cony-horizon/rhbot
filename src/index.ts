@@ -216,7 +216,11 @@ async function main(): Promise<void> {
             `価格 ${fmtPrice(Number(pair.priceUsd))} | 流動性 ${fmtUsd(pair.liquidity?.usd)} | 1h 出来高 ${fmtUsd(pair.volume?.h1)}`,
             "",
             `リスク <b>${scam.score}/100</b>  ${verdict}`,
+            `👥 厚み ${scam.breadth.points}/3 — 取引 ${scam.breadth.txns.toLocaleString("en-US")} 件 / 平均 ${fmtUsd(scam.breadth.avgTradeUsd)} / 買い ${Math.round(scam.breadth.buyShare * 100)}%`,
           ];
+          if (scam.breadth.organic) {
+            lines.push("厚みが確認できたため、出来高が流動性に対して過大でも減点していません。");
+          }
           if (scam.signals.length === 0) lines.push("", "引っかかった点はありません。");
           else {
             lines.push("");

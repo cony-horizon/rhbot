@@ -1,6 +1,6 @@
 import type { DexPair } from "./dexscreener.js";
 import type { Detection } from "./detectors/types.js";
-import type { ScamAssessment } from "./detectors/scam.js";
+import type { Breadth, ScamAssessment } from "./detectors/scam.js";
 import type { PairRow, AlertRow, WalletRow, WalletBuyRow } from "./store.js";
 
 export function escapeHtml(s: string): string {
@@ -109,11 +109,20 @@ export function formatAlert(
   lines.push("", `📈 <a href="${escapeHtml(p.url)}">DexScreener</a>  ·  ${escapeHtml(dexLabel(p))}`);
   lines.push(`<code>${escapeHtml(p.baseToken.address)}</code>`);
 
+  // 厚みが確認できた銘柄は、出来高比の警告を出さないぶん「なぜ信用したか」を示す。
+  // 注意書きだけが並ぶと、通した理由が読み手に伝わらないため。
+  if (scam?.breadth.organic) lines.push("", `👥 ${escapeHtml(formatBreadth(scam.breadth))}`);
+
   if (scam && scam.score >= view.scamShowScoreFrom && scam.signals.length > 0) {
     lines.push("", `⚠️ 注意 (${scam.score}/100)`);
     for (const sig of scam.signals) lines.push(`・${escapeHtml(sig.label)}`);
   }
   return lines.join("\n");
+}
+
+/** 参加者の厚みを 1 行にまとめる */
+export function formatBreadth(b: Breadth): string {
+  return b.reasons.length > 0 ? `参加者の厚みあり — ${b.reasons.join(" / ")}` : "参加者の厚みは確認できず";
 }
 
 function titleLine(p: DexPair): string {

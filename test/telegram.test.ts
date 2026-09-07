@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest";
 import { escapeHtml, fmtAge, fmtPrice, fmtUsd, formatAlert } from "../src/format.js";
 import { parseCommand } from "../src/telegram.js";
 import { detectNewLaunch } from "../src/detectors/newLaunch.js";
+import { assessScam } from "../src/detectors/scam.js";
 import { H, NOW, makeConfig, makePair } from "./helpers.js";
 
 describe("parseCommand", () => {
@@ -38,5 +39,26 @@ describe("format", () => {
     // 内部フィルタで担保済みの値は載せない
     expect(html).not.toContain("流動性");
     expect(html).not.toContain("FDV");
+  });
+
+  it("厚みが確認できた銘柄には、通した理由を添える", () => {
+    const p = makePair({ ageHours: 1, volH1: 1_700_000, liq: 94_000, buysH1: 6033, sellsH1: 5778, changeH1: 1900 });
+    p.marketCap = 1_000_000;
+    p.fdv = 1_000_000;
+    const cfg = makeConfig();
+    const d = detectNewLaunch({ now: NOW, pair: p, ageMs: H, lastAlert: null, lookbackMinPrice: null }, cfg)!;
+    const html = formatAlert(d, p, H, assessScam(p, cfg, NOW));
+    expect(html).toContain("👥");
+    expect(html).toContain("参加者の厚みあり");
+    expect(html).toContain("11,811 件");
+    // 厚みと無関係な注意（薄いプールでの急騰）は残す
+    expect(html).toContain("⚠️ 注意");
+  });
+
+  it("厚みが無ければ、その行は出さない", () => {
+    const p = makePair({ ageHours: 1, volH1: 60_000 });
+    const cfg = makeConfig();
+    const d = detectNewLaunch({ now: NOW, pair: p, ageMs: H, lastAlert: null, lookbackMinPrice: null }, cfg)!;
+    expect(formatAlert(d, p, H, assessScam(p, cfg, NOW))).not.toContain("👥");
   });
 });

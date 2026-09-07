@@ -80,6 +80,10 @@ export interface Config {
   scamMinLiquidityUsd: number;
   scamMinAvgTradeUsd: number;
   scamShowScoreFrom: number;
+  scamBreadthMinTxns: number;
+  scamBreadthMaxAvgUsd: number;
+  scamBreadthBalance: number;
+  scamBreadthNeeded: number;
 
   volLevelMidUsd: number;
   volLevelHighUsd: number;
@@ -267,6 +271,10 @@ export function buildConfig(env: Env, strict = true): Config {
     scamMinLiquidityUsd: num(env, "SCAM_MIN_LIQUIDITY_USD", 20_000),
     scamMinAvgTradeUsd: num(env, "SCAM_MIN_AVG_TRADE_USD", 40),
     scamShowScoreFrom: num(env, "SCAM_SHOW_SCORE_FROM", 20),
+    scamBreadthMinTxns: num(env, "SCAM_BREADTH_MIN_TXNS", 2000),
+    scamBreadthMaxAvgUsd: num(env, "SCAM_BREADTH_MAX_AVG_USD", 500),
+    scamBreadthBalance: num(env, "SCAM_BREADTH_BALANCE", 0.4),
+    scamBreadthNeeded: num(env, "SCAM_BREADTH_NEEDED", 2),
 
     volLevelMidUsd: num(env, "VOL_LEVEL_MID_USD", 50_000),
     volLevelHighUsd: num(env, "VOL_LEVEL_HIGH_USD", 250_000),
