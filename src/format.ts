@@ -1,6 +1,7 @@
 import type { DexPair } from "./dexscreener.js";
 import type { Detection } from "./detectors/types.js";
 import type { Breadth, ScamAssessment } from "./detectors/scam.js";
+import type { RangeWatch } from "./engine.js";
 import type { PairRow, AlertRow, WalletRow, WalletBuyRow } from "./store.js";
 
 export function escapeHtml(s: string): string {
@@ -214,6 +215,26 @@ export function formatPairRow(r: PairRow): string {
   return `• <b>$${escapeHtml(r.base_symbol)}</b>/${escapeHtml(r.quote_symbol)} [${r.tier}] 1h ${fmtUsd(r.last_vol_h1)} | liq ${fmtUsd(
     r.last_liquidity_usd,
   )} | ${fmtPrice(r.last_price_usd)}\n  <code>${escapeHtml(r.base_address)}</code>`;
+}
+
+/**
+ * ヨコヨコ監視中の 1 銘柄（/ranges 用）。
+ *
+ * 見るべきは「あと何 % で鳴るか」なので、それを先頭に置く。
+ * 帯の中のどこにいるかを併せて出すのは、上限に張り付いているのか
+ * 底で沈んでいるのかで、待ち方がまったく違うため。
+ */
+export function formatRangeWatch(w: RangeWatch): string {
+  const near = w.toBreakoutPct <= 0 ? "🔔 条件到達" : w.toBreakoutPct <= 5 ? "🟠" : w.toBreakoutPct <= 15 ? "🟡" : "⚪";
+  const dist = w.toBreakoutPct <= 0 ? "上抜け済み" : `あと <b>+${w.toBreakoutPct.toFixed(1)}%</b>`;
+  const cooled = w.cooledRatio !== null ? `全盛期の ${Math.round(w.cooledRatio * 100)}%` : "全盛期不明";
+  const status = w.primed ? "" : " ⏸ 再点火の条件未達";
+  return [
+    `${near} <b>$${escapeHtml(w.row.base_symbol)}</b> — ${dist}で再点火${status}`,
+    `　帯 ${fmtUsd(w.range.low)}〜${fmtUsd(w.range.high)}（幅 ${w.range.widthPct.toFixed(0)}% / ${fmtAge(w.range.durationMs)}）`,
+    `　いま ${fmtUsd(w.currentMc)}（帯の ${Math.round(w.posInRangePct)}% 地点・${cooled}）| 全盛期 ${fmtUsd(w.row.peak_mc)}`,
+    `　<code>${escapeHtml(w.row.base_address)}</code>`,
+  ].join("\n");
 }
 
 export function formatAlertRow(a: AlertRow): string {

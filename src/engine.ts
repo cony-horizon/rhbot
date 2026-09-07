@@ -3,13 +3,13 @@ import { DexScreenerClient, liquidityUsd, pairAgeMs, priceUsd, vol, type DexPair
 import { detectNewLaunch } from "./detectors/newLaunch.js";
 import { detectRevival } from "./detectors/revival.js";
 import { assessScam, formatScamSummary, type ScamAssessment } from "./detectors/scam.js";
-import { findLongestRange } from "./detectors/range.js";
+import { findLongestRange, type RangeInfo } from "./detectors/range.js";
 import type { Detection } from "./detectors/types.js";
 import { baseMetrics, HOUR_MS, MINUTE_MS } from "./detectors/common.js";
 import { formatAlert, type AlertViewOptions } from "./format.js";
 import { log } from "./logger.js";
 import { PoolScanner, RpcClient } from "./rpc.js";
-import type { Store, Tier } from "./store.js";
+import type { PairRow, Store, Tier } from "./store.js";
 import { buildDailyReport, computeOutcomes, jst } from "./outcomes.js";
 import { SwapHarvester } from "./smartwallets.js";
 
@@ -17,6 +17,23 @@ import { SwapHarvester } from "./smartwallets.js";
 const HEALTH_EMPTY_THRESHOLD = 5;
 /** 同じ警告を繰り返さない間隔 */
 const HEALTH_WARN_COOLDOWN_MS = 6 * 3_600_000;
+
+/** ヨコヨコ監視中の 1 銘柄（/ranges 用） */
+export interface RangeWatch {
+  row: PairRow;
+  range: RangeInfo;
+  currentMc: number;
+  /** ここを超えたら再点火の通知が出る時価総額 */
+  triggerMc: number;
+  /** 上抜けまであと何 %。負なら既に条件を満たしている */
+  toBreakoutPct: number;
+  /** 帯の中でどの位置にいるか。0 = 下限、100 = 上限 */
+  posInRangePct: number;
+  /** 全盛期に対する現在の時価総額の比 */
+  cooledRatio: number | null;
+  /** 全盛期 MC と冷え込みの条件を満たし、あとは上抜けを待つだけか */
+  primed: boolean;
+}
 
 export interface AlertSink {
   broadcast(html: string): Promise<void>;
@@ -284,7 +301,51 @@ export class Engine {
    * 価格ではなく時価総額で見るのは、供給量が変わっても比較が崩れないため。
    */
   private measureMcRange(p: DexPair, now: number) {
-    return findLongestRange((from, to) => this.store.mcRangeBetween(p.pairAddress, from, to), now, this.cfg);
+    return this.mcRangeOf(p.pairAddress, now);
+  }
+
+  private mcRangeOf(pairAddress: string, now: number) {
+    return findLongestRange((from, to) => this.store.mcRangeBetween(pairAddress, from, to), now, this.cfg);
+  }
+
+  /**
+   * いまヨコヨコを組んでいる銘柄の一覧（/ranges 用）。
+   *
+   * 再点火の通知は「上抜けた瞬間」に鳴る。その一瞬まで、何を待っているのかが
+   * 見えないままでは、利用者は自分で板を追うしかない。
+   * ここでは通知と同じ計算をそのまま使い、抜けるまであと何 % かを出す。
+   * 判定式を書き写すと通知と一覧がずれるので、しきい値も detectRevival と同じものを読む。
+   */
+  rangeWatchlist(now = this.now(), limit = 200): RangeWatch[] {
+    const out: RangeWatch[] = [];
+    for (const row of this.store.listRangeCandidates(this.cfg.reigniteMinPeakMcUsd, limit)) {
+      const range = this.mcRangeOf(row.pair_address, now);
+      if (!range) continue;
+      const currentMc = this.store.latestMc(row.pair_address);
+      if (currentMc === null || currentMc <= 0) continue;
+
+      // detectRevival と同じ条件。ここだけ緩めると「一覧には出るのに鳴らない」が起きる
+      const cooledRatio = row.peak_mc > 0 ? currentMc / row.peak_mc : null;
+      const primed =
+        this.cfg.reigniteEnabled &&
+        row.peak_mc >= this.cfg.reigniteMinPeakMcUsd &&
+        cooledRatio !== null &&
+        cooledRatio <= this.cfg.reigniteCooledRatio;
+
+      const triggerMc = range.high * (1 + this.cfg.reigniteBreakoutPct / 100);
+      out.push({
+        row,
+        range,
+        currentMc,
+        triggerMc,
+        toBreakoutPct: (triggerMc / currentMc - 1) * 100,
+        posInRangePct: range.high > range.low ? ((currentMc - range.low) / (range.high - range.low)) * 100 : 100,
+        cooledRatio,
+        primed,
+      });
+    }
+    // 抜けそうな順。待っているものを上に出す
+    return out.sort((a, b) => a.toBreakoutPct - b.toBreakoutPct);
   }
 
   /**

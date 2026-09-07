@@ -507,6 +507,26 @@ export class Store {
     return this.db.prepare("SELECT * FROM pairs ORDER BY last_vol_h1 DESC LIMIT ?").all(limit) as unknown as PairRow[];
   }
 
+  /**
+   * 再点火を待っている銘柄の母集団。
+   * 「かつて大きな時価総額をつけた」か「手動で監視に入れた」もの。
+   * ヨコヨコを組んでいるかどうかはスナップショットを見ないと分からないので、
+   * ここでは候補を絞るところまでを担う。
+   */
+  listRangeCandidates(minPeakMc: number, limit: number): PairRow[] {
+    return this.db
+      .prepare("SELECT * FROM pairs WHERE peak_mc >= ? OR manual = 1 ORDER BY peak_mc DESC LIMIT ?")
+      .all(minPeakMc, limit) as unknown as PairRow[];
+  }
+
+  /** 直近のスナップショットの時価総額。pairs 表には現在値を持たせていないため */
+  latestMc(pairAddress: string): number | null {
+    const row = this.db
+      .prepare("SELECT market_cap AS m FROM snapshots WHERE pair_address = ? AND market_cap > 0 ORDER BY ts DESC LIMIT 1")
+      .get(pairAddress.toLowerCase()) as { m: number } | undefined;
+    return row?.m ?? null;
+  }
+
   listManual(): PairRow[] {
     return this.db.prepare("SELECT * FROM pairs WHERE manual = 1 ORDER BY last_vol_h1 DESC").all() as unknown as PairRow[];
   }

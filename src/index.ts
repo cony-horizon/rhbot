@@ -1,7 +1,7 @@
 import { ConfigError, loadConfig, type Config } from "./config.js";
 import { DexScreenerClient } from "./dexscreener.js";
 import { Engine } from "./engine.js";
-import { escapeHtml, fmtPrice, fmtUsd, formatAlertRow, formatPairRow, formatSuppressedRow, formatWalletBuyRow, formatWalletRow } from "./format.js";
+import { escapeHtml, fmtPrice, fmtUsd, formatAlertRow, formatPairRow, formatRangeWatch, formatSuppressedRow, formatWalletBuyRow, formatWalletRow } from "./format.js";
 import { formatRecentOutcomes } from "./outcomes.js";
 import { log, setLogLevel } from "./logger.js";
 import { RpcClient } from "./rpc.js";
@@ -12,6 +12,7 @@ import { CommandLoop, TelegramClient, TelegramError, TelegramNetworkError } from
 const COMMANDS = [
   { command: "status", description: "監視状況を表示" },
   { command: "top", description: "1h 出来高上位ペア" },
+  { command: "ranges", description: "いまヨコヨコを組んでいる銘柄と、上抜けまでの距離" },
   { command: "alerts", description: "直近のアラート履歴" },
   { command: "test", description: "通知の見本を送って配信を確認" },
   { command: "filtered", description: "スキャム判定で止めた通知を見る" },
@@ -38,6 +39,7 @@ function helpText(): string {
     "",
     "🚫 バンドル・洗浄取引で出来高を作られた銘柄は自動で除外します（/filtered で確認）",
     "📊 毎朝、前日の通知の成績と改善案を送ります（/report でいつでも）",
+    "👀 いま何を待っているかは /ranges — ヨコヨコ中の銘柄と、上抜けまであと何 % か",
     "⭐ 勝った復活銘柄の急騰前に買っていたウォレットを集めます（/smart）",
     "",
     "通知が来ないときは /status で監視ペア数を、/test で配信経路を確認してください。",
@@ -190,6 +192,29 @@ async function main(): Promise<void> {
           if (!w) return "このウォレットの記録はありません";
           const buys = store.walletBuys(addr, 20);
           return `${formatWalletRow(w, cfg.smartMinHits)}\n\n<b>買い履歴</b>\n` + buys.map(formatWalletBuyRow).join("\n");
+        }
+        case "ranges": {
+          const n = Math.min(30, Number(args[0]) || 15);
+          const all = engine.rangeWatchlist();
+          if (all.length === 0) {
+            return (
+              "いまヨコヨコと判定できる銘柄はありません。\n" +
+              `帯として認めるには ${cfg.rangeMinHours} 時間以上・${cfg.rangeMinSamples} 点以上の観測が要ります。` +
+              "起動直後は履歴が足りないので、しばらく回してから見てください。"
+            );
+          }
+          const primed = all.filter((w) => w.primed);
+          const rows = (primed.length > 0 ? primed : all).slice(0, n);
+          const head =
+            `<b>ヨコヨコ監視中 ${primed.length} 件</b>` +
+            (all.length > primed.length ? `（帯を組んでいる銘柄は全 ${all.length} 件）` : "") +
+            `\n上抜け条件: 帯の上限 +${cfg.reigniteBreakoutPct}%`;
+          return (
+            head +
+            "\n\n" +
+            rows.map(formatRangeWatch).join("\n\n") +
+            "\n\n🔔 = 条件到達 / 🟠 あと 5% / 🟡 あと 15% / ⚪ それ以上"
+          );
         }
         case "filtered": {
           const n = Math.min(20, Number(args[0]) || 10);

@@ -536,3 +536,110 @@ describe("Store — 旧バージョンの DB を引き継いで起動する", ()
     fs.rmSync(path.dirname(file), { recursive: true, force: true });
   });
 });
+
+describe("Engine — /ranges: いま何を待っているか", () => {
+  /**
+   * 全盛期 MC $5M → 冷え込み → $1.0M〜$1.5M で 30 時間ヨコヨコ、という銘柄を
+   * スナップショットから組み立てる。実際の履歴と同じ形で入れないと、
+   * 一覧に出る条件と通知が鳴る条件がずれていても気づけない。
+   */
+  function seedConsolidation(store: Store, opts: { symbol: string; peakMc: number; low: number; high: number; nowMc: number }) {
+    const addr = `0xpair_${opts.symbol.toLowerCase()}`;
+    const mk = (mc: number) => {
+      const p = makePair({ address: addr, token: `0xtok_${opts.symbol.toLowerCase()}`, symbol: opts.symbol, ageHours: 60, price: mc / 1e9 });
+      p.marketCap = mc;
+      p.fdv = mc;
+      return p;
+    };
+    // 全盛期を先に通す（peak_mc は upsert で記録される）
+    store.upsertPair(mk(opts.peakMc), "test", NOW - 50 * H);
+    // 30 時間ぶん、帯の中を往復させる
+    for (let i = 0; i < 40; i++) {
+      const mc = i % 2 === 0 ? opts.low : opts.high;
+      store.insertSnapshot(mk(mc), NOW - (31 - i * 0.75) * H);
+    }
+    store.insertSnapshot(mk(opts.nowMc), NOW - 60_000);
+    return addr;
+  }
+
+  it("ヨコヨコ中の銘柄を、上抜けまでの距離が近い順に出す", () => {
+    const { store, engine } = setup();
+    seedConsolidation(store, { symbol: "FAR", peakMc: 5_000_000, low: 1_000_000, high: 1_500_000, nowMc: 1_050_000 });
+    seedConsolidation(store, { symbol: "NEAR", peakMc: 5_000_000, low: 1_000_000, high: 1_500_000, nowMc: 1_480_000 });
+
+    const list = engine.rangeWatchlist(NOW);
+    expect(list.map((w) => w.row.base_symbol)).toEqual(["NEAR", "FAR"]);
+
+    const near = list[0];
+    expect(near.range.low).toBe(1_000_000);
+    expect(near.range.high).toBe(1_500_000);
+    expect(near.currentMc).toBe(1_480_000);
+    expect(near.primed).toBe(true);
+    // 上抜けは帯の上限 +REIGNITE_BREAKOUT_PCT
+    expect(near.triggerMc).toBeCloseTo(1_500_000 * (1 + cfgFor().reigniteBreakoutPct / 100), -2);
+    expect(near.toBreakoutPct).toBeGreaterThan(0);
+    expect(near.posInRangePct).toBeCloseTo(96, 0);
+  });
+
+  it("一覧が『あと少し』と言った銘柄は、そこまで上げると実際に通知が出る", async () => {
+    const { store, engine, dex, sent } = setup();
+    const addr = seedConsolidation(store, { symbol: "GO", peakMc: 5_000_000, low: 1_000_000, high: 1_500_000, nowMc: 1_480_000 });
+    const w = engine.rangeWatchlist(NOW)[0];
+    expect(w.toBreakoutPct).toBeGreaterThan(0);
+    expect(w.primed).toBe(true);
+
+    // 一覧が示した上抜け価格まで実際に上げてみる。
+    // ここで鳴らないなら、一覧の「あと +X%」は嘘をついていることになる
+    const broke = makePair({
+      address: addr,
+      token: "0xtok_go",
+      symbol: "GO",
+      ageHours: 60,
+      price: (w.triggerMc * 1.01) / 1e9,
+      volH1: 180_000,
+      volH24: 2_100_000,
+      liq: 260_000,
+      buysH1: 90,
+      sellsH1: 70,
+    });
+    broke.marketCap = w.triggerMc * 1.01;
+    broke.fdv = broke.marketCap;
+    dex.set(broke);
+    store.setTier(addr, "dormant", NOW - 10 * H);
+    await engine.refreshTier("dormant", 5);
+
+    expect(sent.join("\n")).toContain("$GO");
+    const alert = store.recentAlerts(5).find((a) => a.symbol === "GO");
+    expect(alert?.trigger).toBe("reignite");
+  });
+
+  it("全盛期が小さい銘柄は帯を組んでいても『条件未達』として区別する", () => {
+    const { store, engine } = setup();
+    seedConsolidation(store, { symbol: "SMALL", peakMc: 200_000, low: 100_000, high: 150_000, nowMc: 140_000 });
+    const list = engine.rangeWatchlist(NOW);
+    // 母集団に入らない（peak_mc がしきい値未満で手動でもない）
+    expect(list).toHaveLength(0);
+  });
+
+  it("冷え込んでいない（全盛期の近くにいる）銘柄は primed にしない", () => {
+    const { store, engine } = setup();
+    seedConsolidation(store, { symbol: "HOT", peakMc: 1_600_000, low: 1_000_000, high: 1_500_000, nowMc: 1_450_000 });
+    const w = engine.rangeWatchlist(NOW)[0];
+    expect(w.cooledRatio).toBeGreaterThan(cfgFor().reigniteCooledRatio);
+    expect(w.primed).toBe(false);
+  });
+
+  it("観測が足りない銘柄は一覧に出さない（帯と呼べないため）", () => {
+    const { store, engine } = setup();
+    const p = makePair({ address: "0xpair_thin", symbol: "THIN", ageHours: 60 });
+    p.marketCap = 1_200_000;
+    p.fdv = 1_200_000;
+    store.upsertPair(p, "test", NOW - 50 * H);
+    store.insertSnapshot(p, NOW - H);
+    expect(engine.rangeWatchlist(NOW)).toHaveLength(0);
+  });
+});
+
+function cfgFor() {
+  return makeConfig({ DISCOVERY_SEARCH_QUERIES: "x", DISCOVERY_TOKEN_ADDRESSES: "", DISCOVERY_USE_PROFILES: "false" });
+}
