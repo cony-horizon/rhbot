@@ -627,6 +627,24 @@ export class Store {
     return row?.t ?? null;
   }
 
+  /** 指定区間の価格の上下と観測の広がり。時価総額が取れない銘柄向けの代替 */
+  priceRangeBetween(
+    pairAddress: string,
+    fromTs: number,
+    toTs: number,
+  ): { high: number; low: number; samples: number; firstTs: number; lastTs: number } | null {
+    const row = this.db
+      .prepare(
+        `SELECT MAX(price_usd) AS hi, MIN(price_usd) AS lo, COUNT(*) AS n, MIN(ts) AS t0, MAX(ts) AS t1
+         FROM snapshots WHERE pair_address = ? AND ts >= ? AND ts <= ? AND price_usd IS NOT NULL AND price_usd > 0`,
+      )
+      .get(pairAddress.toLowerCase(), fromTs, toTs) as
+      | { hi: number | null; lo: number | null; n: number; t0: number | null; t1: number | null }
+      | undefined;
+    if (!row || row.hi === null || row.lo === null || row.lo <= 0 || row.t0 === null || row.t1 === null) return null;
+    return { high: row.hi, low: row.lo, samples: row.n, firstTs: row.t0, lastTs: row.t1 };
+  }
+
   /** 指定区間の最高値。「ヨコヨコのレンジ上限」を求めるために使う */
   maxPriceBetween(pairAddress: string, fromTs: number, toTs: number): number | null {
     const row = this.db

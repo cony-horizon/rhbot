@@ -252,9 +252,12 @@ describe("detectNewLaunch — 時価総額の下限", () => {
   });
 
   it("再点火（時価総額ベース）はこの下限の影響を受けない", () => {
-    // 新規ローンチの下限は新規側だけの条件で、復活系の判定には関わらない
-    const c = makeConfig({ NEW_MIN_MC_USD: "50000000" });
-    expect(c.newMinMcUsd).toBe(50_000_000);
-    expect(c.reigniteMinPeakMcUsd).toBe(2_000_000);
+    // 新規ローンチの下限は新規側だけの条件で、復活系の判定には関わらない。
+    // 既定値そのものを書くと調整のたびに壊れるので、独立していることを確かめる
+    const base = makeConfig();
+    const raised = makeConfig({ NEW_MIN_MC_USD: "50000000" });
+    expect(raised.newMinMcUsd).toBe(50_000_000);
+    expect(raised.reigniteMinPeakMcUsd).toBe(base.reigniteMinPeakMcUsd);
+    expect(raised.priorityPeakMcUsd).toBe(base.priorityPeakMcUsd);
   });
 });

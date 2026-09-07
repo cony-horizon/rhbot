@@ -3,7 +3,7 @@ import { DexScreenerClient, liquidityUsd, pairAgeMs, priceUsd, vol, type DexPair
 import { detectNewLaunch } from "./detectors/newLaunch.js";
 import { detectRevival } from "./detectors/revival.js";
 import { assessScam, formatScamSummary, type ScamAssessment } from "./detectors/scam.js";
-import { toRange } from "./detectors/range.js";
+import { findLongestRange } from "./detectors/range.js";
 import type { Detection } from "./detectors/types.js";
 import { baseMetrics, HOUR_MS, MINUTE_MS } from "./detectors/common.js";
 import { formatAlert, type AlertViewOptions } from "./format.js";
@@ -268,16 +268,15 @@ export class Engine {
   }
 
   /**
-   * ヨコヨコのレンジ上限を測る。
+   * ヨコヨコのレンジ上限を価格で測る（時価総額が取れない銘柄向けの代替）。
    * 直近の値動きそのものを含めると「自分自身を超えられない」ので、末尾を除いて評価する。
-   * レンジと呼べるだけの観測が溜まっていなければ null を返し、この経路は使わない。
    */
   private measureRangeHigh(p: DexPair, now: number): number | null {
-    const from = now - this.cfg.revivalBaseWindowMin * MINUTE_MS;
-    const to = now - this.cfg.revivalRangeExcludeMin * MINUTE_MS;
-    if (to <= from) return null;
-    if (this.store.countSnapshotsBetween(p.pairAddress, from, to) < 10) return null;
-    return this.store.maxPriceBetween(p.pairAddress, from, to);
+    // 生の最大値ではなく、帯として成立した区間の上限を使う。
+    // そうしないと初動スパイクの天井を抵抗線と取り違え、
+    // そこを +12% 超えるまで鳴らない＝倍以上になってからの通知になる。
+    const r = findLongestRange((from, to) => this.store.priceRangeBetween(p.pairAddress, from, to), now, this.cfg);
+    return r?.high ?? null;
   }
 
   /**
@@ -285,10 +284,7 @@ export class Engine {
    * 価格ではなく時価総額で見るのは、供給量が変わっても比較が崩れないため。
    */
   private measureMcRange(p: DexPair, now: number) {
-    const from = now - this.cfg.rangeWindowHours * HOUR_MS;
-    const to = now - this.cfg.revivalRangeExcludeMin * MINUTE_MS;
-    if (to <= from) return null;
-    return toRange(this.store.mcRangeBetween(p.pairAddress, from, to), this.cfg);
+    return findLongestRange((from, to) => this.store.mcRangeBetween(p.pairAddress, from, to), now, this.cfg);
   }
 
   /**
