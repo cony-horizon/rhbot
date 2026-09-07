@@ -464,3 +464,75 @@ describe("Engine — 反省の材料と収穫", () => {
     expect(await engine.runHarvests()).toBe(0);
   });
 });
+
+describe("Store — 旧バージョンの DB を引き継いで起動する", () => {
+  /** peak_* も market_cap も無かった頃の pairs / snapshots / alerts を作る */
+  function legacyDb(): string {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), "rhbot-legacy-"));
+    const file = path.join(dir, "bot.sqlite");
+    const db = new DatabaseSync(file);
+    db.exec(`CREATE TABLE pairs (
+      pair_address TEXT PRIMARY KEY, chain_id TEXT NOT NULL, dex_id TEXT NOT NULL DEFAULT '',
+      labels TEXT NOT NULL DEFAULT '', base_address TEXT NOT NULL, base_symbol TEXT NOT NULL DEFAULT '',
+      base_name TEXT NOT NULL DEFAULT '', quote_address TEXT NOT NULL DEFAULT '', quote_symbol TEXT NOT NULL DEFAULT '',
+      url TEXT NOT NULL DEFAULT '', pair_created_at INTEGER, first_seen_at INTEGER NOT NULL,
+      last_refreshed_at INTEGER NOT NULL DEFAULT 0, last_price_usd REAL, last_liquidity_usd REAL NOT NULL DEFAULT 0,
+      last_vol_h1 REAL NOT NULL DEFAULT 0, last_vol_h24 REAL NOT NULL DEFAULT 0, tier TEXT NOT NULL DEFAULT 'hot',
+      dead_since INTEGER, source TEXT NOT NULL DEFAULT '', manual INTEGER NOT NULL DEFAULT 0,
+      miss_count INTEGER NOT NULL DEFAULT 0)`);
+    db.exec(`CREATE TABLE snapshots (
+      id INTEGER PRIMARY KEY AUTOINCREMENT, pair_address TEXT NOT NULL, ts INTEGER NOT NULL, price_usd REAL,
+      vol_h1 REAL NOT NULL DEFAULT 0, vol_h24 REAL NOT NULL DEFAULT 0, liquidity_usd REAL NOT NULL DEFAULT 0,
+      buys_h1 INTEGER NOT NULL DEFAULT 0, sells_h1 INTEGER NOT NULL DEFAULT 0)`);
+    db.exec(`CREATE TABLE alerts (
+      id INTEGER PRIMARY KEY AUTOINCREMENT, kind TEXT NOT NULL, token_address TEXT NOT NULL,
+      pair_address TEXT NOT NULL, ts INTEGER NOT NULL, level INTEGER NOT NULL DEFAULT 1, price_usd REAL,
+      symbol TEXT NOT NULL DEFAULT '', summary TEXT NOT NULL DEFAULT '')`);
+    db.prepare(
+      `INSERT INTO pairs(pair_address, chain_id, base_address, base_symbol, first_seen_at, last_refreshed_at, tier)
+       VALUES(?, ?, ?, ?, ?, ?, ?)`,
+    ).run("0xold", "robinhood", "0xoldtoken", "OLD", NOW - 5 * H, NOW - H, "dormant");
+    db.prepare("INSERT INTO snapshots(pair_address, ts, price_usd, vol_h1) VALUES(?, ?, ?, ?)").run("0xold", NOW - 2 * H, 0.5, 1000);
+    db.prepare("INSERT INTO alerts(kind, token_address, pair_address, ts, level, price_usd, symbol, summary) VALUES(?,?,?,?,?,?,?,?)")
+      .run("revival", "0xoldtoken", "0xold", NOW - 3 * H, 1, 0.4, "OLD", "以前の通知");
+    db.close();
+    return file;
+  }
+
+  it("列も索引も足りない DB を開いて起動できる（peak_mc への索引で落ちない）", () => {
+    const file = legacyDb();
+    const store = new Store(file); // ここで例外が出ないことが要件
+    const row = store.getPair("0xold")!;
+    expect(row.base_symbol).toBe("OLD");
+    expect(row.peak_mc).toBe(0);
+    expect(row.peak_vol_h1).toBe(0);
+    expect(store.recentAlerts(5)[0]!.symbol).toBe("OLD");
+    expect(store.recentAlerts(5)[0]!.mc_usd).toBe(0);
+    store.close();
+    fs.rmSync(path.dirname(file), { recursive: true, force: true });
+  });
+
+  it("引き継いだ DB でも、更新後は新機能がそのまま動く", () => {
+    const file = legacyDb();
+    const store = new Store(file);
+    const p = makePair({ address: "0xold", token: "0xoldtoken", symbol: "OLD", volH1: 50_000 });
+    p.marketCap = 4_000_000;
+    p.fdv = 4_000_000;
+    store.upsertPair(p, "test", NOW);
+    store.insertSnapshot(p, NOW);
+    expect(store.getPair("0xold")!.peak_mc).toBe(4_000_000);
+    expect(store.listPriorityForRefresh(1_000_000, NOW + 1, 10)).toHaveLength(1);
+    expect(store.maxMcBetween("0xold", NOW - H, NOW + H)).toBe(4_000_000);
+    store.close();
+    fs.rmSync(path.dirname(file), { recursive: true, force: true });
+  });
+
+  it("二度目の起動でも壊れない（索引が既にある状態）", () => {
+    const file = legacyDb();
+    new Store(file).close();
+    const again = new Store(file);
+    expect(again.getPair("0xold")).not.toBeNull();
+    again.close();
+    fs.rmSync(path.dirname(file), { recursive: true, force: true });
+  });
+});

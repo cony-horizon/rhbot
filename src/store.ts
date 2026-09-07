@@ -136,6 +136,22 @@ export interface PendingRow {
   attempts: number;
 }
 
+/**
+ * 索引は表の定義とは分けて持ち、移行処理の「後」に張る。
+ * 同じ文字列に混ぜると、既存 DB に対して「まだ追加していない列」へ索引を張ろうとして落ちる。
+ * （peak_mc を足したときに実際に起きた）
+ */
+const INDEXES = `
+CREATE INDEX IF NOT EXISTS idx_pairs_peak ON pairs(peak_mc);
+CREATE INDEX IF NOT EXISTS idx_pairs_tier_refresh ON pairs(tier, last_refreshed_at);
+CREATE INDEX IF NOT EXISTS idx_pairs_base ON pairs(base_address);
+CREATE INDEX IF NOT EXISTS idx_snapshots_pair_ts ON snapshots(pair_address, ts);
+CREATE INDEX IF NOT EXISTS idx_alerts_kind_token_ts ON alerts(kind, token_address, ts);
+CREATE INDEX IF NOT EXISTS idx_alerts_ts ON alerts(ts);
+CREATE INDEX IF NOT EXISTS idx_wallets_hits ON wallets(hits DESC, quote_volume DESC);
+CREATE INDEX IF NOT EXISTS idx_wallet_buys_wallet ON wallet_buys(wallet);
+`;
+
 const SCHEMA = `
 CREATE TABLE IF NOT EXISTS kv (
   key TEXT PRIMARY KEY,
@@ -171,9 +187,6 @@ CREATE TABLE IF NOT EXISTS pairs (
   peak_mc REAL NOT NULL DEFAULT 0,
   peak_mc_at INTEGER
 );
-CREATE INDEX IF NOT EXISTS idx_pairs_peak ON pairs(peak_mc);
-CREATE INDEX IF NOT EXISTS idx_pairs_tier_refresh ON pairs(tier, last_refreshed_at);
-CREATE INDEX IF NOT EXISTS idx_pairs_base ON pairs(base_address);
 CREATE TABLE IF NOT EXISTS snapshots (
   id INTEGER PRIMARY KEY AUTOINCREMENT,
   pair_address TEXT NOT NULL,
@@ -186,7 +199,6 @@ CREATE TABLE IF NOT EXISTS snapshots (
   buys_h1 INTEGER NOT NULL DEFAULT 0,
   sells_h1 INTEGER NOT NULL DEFAULT 0
 );
-CREATE INDEX IF NOT EXISTS idx_snapshots_pair_ts ON snapshots(pair_address, ts);
 CREATE TABLE IF NOT EXISTS alerts (
   id INTEGER PRIMARY KEY AUTOINCREMENT,
   kind TEXT NOT NULL,
@@ -207,8 +219,6 @@ CREATE TABLE IF NOT EXISTS alerts (
   sells_h1 INTEGER NOT NULL DEFAULT 0,
   age_hours REAL
 );
-CREATE INDEX IF NOT EXISTS idx_alerts_kind_token_ts ON alerts(kind, token_address, ts);
-CREATE INDEX IF NOT EXISTS idx_alerts_ts ON alerts(ts);
 CREATE TABLE IF NOT EXISTS alert_outcomes (
   alert_id INTEGER PRIMARY KEY,
   alert_ts INTEGER NOT NULL,
@@ -234,7 +244,6 @@ CREATE TABLE IF NOT EXISTS wallets (
   first_seen INTEGER NOT NULL,
   last_seen INTEGER NOT NULL
 );
-CREATE INDEX IF NOT EXISTS idx_wallets_hits ON wallets(hits DESC, quote_volume DESC);
 CREATE TABLE IF NOT EXISTS wallet_buys (
   id INTEGER PRIMARY KEY AUTOINCREMENT,
   wallet TEXT NOT NULL,
@@ -248,7 +257,6 @@ CREATE TABLE IF NOT EXISTS wallet_buys (
   tx_hash TEXT NOT NULL,
   UNIQUE(tx_hash, wallet, token_address)
 );
-CREATE INDEX IF NOT EXISTS idx_wallet_buys_wallet ON wallet_buys(wallet);
 CREATE TABLE IF NOT EXISTS harvests (
   alert_id INTEGER PRIMARY KEY,
   ts INTEGER NOT NULL,
@@ -273,8 +281,11 @@ export class Store {
     this.db = new DatabaseSync(dbPath);
     this.db.exec("PRAGMA journal_mode = WAL;");
     this.db.exec("PRAGMA synchronous = NORMAL;");
+    // 表 → 列の移行 → 索引 の順に流す。この順序でないと、
+    // 既存 DB で「これから追加する列」に索引を張ろうとして失敗する
     this.db.exec(SCHEMA);
     this.migrate();
+    this.db.exec(INDEXES);
   }
 
   /** 既に bot.sqlite を持っている利用者のために、後から足した列を補う */
