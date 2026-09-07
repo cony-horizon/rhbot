@@ -148,6 +148,14 @@ function attributes(a: Judged, cfg: Config): Attr[] {
   const band = a.scam_score >= 40 ? "40+" : a.scam_score >= 20 ? "20-39" : "0-19";
   out.push({ name: "リスク", bucket: band, knob: "SCAM_SCORE_THRESHOLD" });
 
+  // 出来高が時価総額の何倍動いたか。低MC レーンのしきい値はここを見て決める。
+  // 一件の実例から勘で置くと、また同じ取り逃がしをするため
+  if (a.mc_usd > 0 && a.vol_h1 > 0) {
+    const r = a.vol_h1 / a.mc_usd;
+    const bucket = r >= 3 ? "3倍以上" : r >= 1 ? "1-3倍" : r >= 0.5 ? "0.5-1倍" : "0.5倍未満";
+    out.push({ name: "出来高/MC", bucket, knob: "NEW_LOW_MC_VOL_TO_MC" });
+  }
+
   const tx = a.buys_h1 + a.sells_h1;
   if (tx >= 20) {
     const share = a.buys_h1 / tx;

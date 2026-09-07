@@ -246,7 +246,7 @@ export function buildConfig(env: Env, strict = true): Config {
     // 時価総額が小さくても、それに見合う出来高と参加者の厚みがあるなら通す。
     newLowMcEnabled: bool(env, "NEW_LOW_MC_ENABLED", true),
     newLowMcFloorUsd: num(env, "NEW_LOW_MC_FLOOR_USD", 150_000),
-    newLowMcVolToMcRatio: num(env, "NEW_LOW_MC_VOL_TO_MC", 0.5),
+    newLowMcVolToMcRatio: num(env, "NEW_LOW_MC_VOL_TO_MC", 3.0),
     newLowMcMinLiquidityUsd: num(env, "NEW_LOW_MC_MIN_LIQUIDITY_USD", 25_000),
 
     revivalEnabled: bool(env, "REVIVAL_ENABLED", true),

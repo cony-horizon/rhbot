@@ -271,6 +271,7 @@ describe("$QC — 実物の勝ちコールを取り逃がさない", () => {
     const p = quantumCats();
     const mc = 175_800;
     expect(mc).toBeGreaterThan(cfg.newLowMcFloorUsd);
+    // 3.72 倍。しきい値 3.0 に対して 2 割強の余裕がある
     expect(653_448 / mc).toBeGreaterThan(cfg.newLowMcVolToMcRatio);
     expect(38_200).toBeGreaterThan(cfg.newLowMcMinLiquidityUsd);
     expect(assessBreadth(p, cfg).txns).toBeGreaterThan(cfg.scamBreadthSmallMinTxns);
@@ -291,15 +292,17 @@ describe("低時価総額レーン — 出来高が伴う小型を通す", () =>
    */
   function smallButBusy(over: Partial<{ mc: number; volH1: number; buys: number; sells: number }> = {}) {
     const mc = over.mc ?? 220_000;
+    // 出来高比は $QC の実測 (3.72 倍) と同じ水準にしてある。
+    // しきい値を上げたときにここが追随していないと、テストが現実と乖離する
     const p = makePair({
       symbol: "SPROUT",
       ageHours: 2,
       price: 0.00022,
-      volH1: over.volH1 ?? 180_000,
-      volH24: 400_000,
+      volH1: over.volH1 ?? 800_000,
+      volH24: 900_000,
       liq: 60_000,
-      buysH1: over.buys ?? 520,
-      sellsH1: over.sells ?? 430,
+      buysH1: over.buys ?? 2_100,
+      sellsH1: over.sells ?? 1_800,
       changeH1: 140,
     });
     p.fdv = mc;
@@ -314,13 +317,13 @@ describe("低時価総額レーン — 出来高が伴う小型を通す", () =>
     )!;
     expect(d).not.toBeNull();
     expect(d.display.trigger).toBe("new_lowmc");
-    expect(d.display.lowMcVolToMc).toBeCloseTo(180_000 / 220_000, 2);
+    expect(d.display.lowMcVolToMc).toBeCloseTo(800_000 / 220_000, 2);
     expect(d.reason).toContain("時価総額");
   });
 
   it("出来高が規模に見合わなければ通さない", () => {
-    // 時価総額 $220K に対し 1h $20K = 0.09 倍
-    const p = smallButBusy({ volH1: 20_000 });
+    // 時価総額 $220K に対し 1h $180K = 0.82 倍。$QC の 3.72 倍とは別物
+    const p = smallButBusy({ volH1: 180_000 });
     expect(detectNewLaunch({ now: NOW, pair: p, ageMs: 2 * 3_600_000, lastAlert: null, lookbackMinPrice: null }, cfg)).toBeNull();
   });
 
@@ -342,6 +345,7 @@ describe("低時価総額レーン — 出来高が伴う小型を通す", () =>
 
   it("時価総額が下限以上の銘柄は従来どおり new 扱い", () => {
     const p = smallButBusy({ mc: 3_000_000 });
+    // 出来高比は低MC の条件を満たすが、規模が十分なのでレーンを通る必要がない
     const d = detectNewLaunch({ now: NOW, pair: p, ageMs: 2 * 3_600_000, lastAlert: null, lookbackMinPrice: null }, cfg)!;
     expect(d.display.trigger).toBe("new");
   });
