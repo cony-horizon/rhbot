@@ -136,8 +136,11 @@ function titleLine(p: DexPair): string {
 function newLaunchLines(d: Detection, p: DexPair, ageMs: number | null, view: AlertViewOptions): string[] {
   const m = d.metrics;
   const size = launchSize(d.level, d.levelCount);
-  return [
-    `${size.mark} <b>新規ローンチ</b> ｜ 規模 <b>${size.label}</b>`,
+  const lowMc = d.display.trigger === "new_lowmc";
+  const lines = [
+    lowMc
+      ? `${size.mark} <b>新規ローンチ</b> ｜ 規模 <b>${size.label}</b> ｜ 🌱 <b>低MC</b>`
+      : `${size.mark} <b>新規ローンチ</b> ｜ 規模 <b>${size.label}</b>`,
     titleLine(p),
     "",
     `価格   <b>${fmtPrice(m.priceUsd)}</b>   1h ${fmtPct(m.priceChangeH1)}   5m ${fmtPct(m.priceChangeM5)}`,
@@ -145,6 +148,12 @@ function newLaunchLines(d: Detection, p: DexPair, ageMs: number | null, view: Al
     `時価総額 ${fmtUsd(p.marketCap ?? p.fdv)}`,
     `経過   ${fmtAge(ageMs)}`,
   ];
+  // 低MC は通す条件が普通のレーンと違うので、なぜ通したかを本文に書く。
+  // 試験運用中は特に、後から成績を見返すときの手がかりになる
+  if (lowMc && d.display.lowMcVolToMc != null) {
+    lines.push("", `🌱 小さいが出来高が伴う — 時価総額の <b>${d.display.lowMcVolToMc.toFixed(1)}倍</b>/h が動いている`);
+  }
+  return lines;
 }
 
 /** 🔥 復活: 「どこから」「どれだけ」上がったか、出来高がどの水準かを見せる */

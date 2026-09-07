@@ -461,7 +461,7 @@ export class Engine {
         scam_reasons: scam.signals.map((sig) => sig.label).join("\n"),
         suppressed: blocked ? 1 : 0,
         mc_usd: p.marketCap && p.marketCap > 0 ? p.marketCap : (p.fdv ?? 0),
-        trigger: d.kind === "new_launch" ? "new" : (d.display.trigger ?? "dormant"),
+        trigger: d.display.trigger ?? (d.kind === "new_launch" ? "new" : "dormant"),
         vol_h1: d.metrics.volH1,
         buys_h1: d.metrics.buysH1,
         sells_h1: d.metrics.sellsH1,

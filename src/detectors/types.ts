@@ -1,6 +1,7 @@
 import type { DexPair } from "../dexscreener.js";
 import type { AlertKind, AlertRow } from "../store.js";
 import type { RangeInfo } from "./range.js";
+import type { Breadth } from "./scam.js";
 
 export interface DetectorContext {
   now: number;
@@ -64,8 +65,8 @@ export interface DetectionDisplay {
   breakoutPct?: number | null;
   /** 再点火: 時価総額のレンジ上限をどれだけ上抜けたか */
   mcBreakoutPct?: number | null;
-  /** 復活: どの経路で拾ったか */
-  trigger?: "reignite" | "dormant" | "breakout" | "fast";
+  /** どの経路で拾ったか */
+  trigger?: "reignite" | "dormant" | "breakout" | "fast" | "new" | "new_lowmc";
   /** 再点火: 全盛期の時価総額 */
   peakMc?: number | null;
   /** 再点火: 全盛期からの経過 */
@@ -76,4 +77,8 @@ export interface DetectionDisplay {
   mcRange?: RangeInfo | null;
   /** 現在の時価総額 */
   currentMc?: number | null;
+  /** 低時価総額レーン: 1h 出来高が時価総額の何倍か */
+  lowMcVolToMc?: number | null;
+  /** 低時価総額レーン: 通す根拠になった参加者の厚み */
+  breadth?: Breadth | null;
 }

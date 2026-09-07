@@ -52,7 +52,12 @@ function configText(cfg: Config): string {
   return [
     "<b>検知設定</b>",
     `chain: ${cfg.chainId} | 最低流動性: ${fmtUsd(cfg.minLiquidityUsd)}`,
-    `<b>新規</b> ${cfg.newLaunchEnabled ? "ON" : "OFF"}: 〜${cfg.newMaxAgeHours}h, 1h出来高段階 ${cfg.newVolH1TiersUsd.map((n) => fmtUsd(n)).join(" / ")}, 買>=${cfg.newMinBuysH1}`,
+    `<b>新規</b> ${cfg.newLaunchEnabled ? "ON" : "OFF"}: 〜${cfg.newMaxAgeHours}h, MC>=${fmtUsd(cfg.newMinMcUsd)}, 1h出来高段階 ${cfg.newVolH1TiersUsd
+      .map((n) => fmtUsd(n))
+      .join(" / ")}, 買>=${cfg.newMinBuysH1}`,
+    `<b>新規(低MC・試験中)</b> ${cfg.newLowMcEnabled ? "ON" : "OFF"}: MC ${fmtUsd(cfg.newLowMcFloorUsd)}〜${fmtUsd(
+      cfg.newMinMcUsd,
+    )} かつ 1h出来高がMCの ${cfg.newLowMcVolToMcRatio} 倍以上 かつ 流動性 ${fmtUsd(cfg.newLowMcMinLiquidityUsd)} 以上 かつ 参加者の厚みあり`,
     `<b>復活</b> ${cfg.revivalEnabled ? "ON" : "OFF"}: ${cfg.revivalMinAgeHours}h〜, 価格 +${cfg.revivalPriceChangePct}% (1h or ${cfg.revivalLookbackMin}分安値比), 1h出来高>=${fmtUsd(
       cfg.revivalMinVolH1Usd,
     )}, 突発率>=${cfg.revivalVolSpikeRatio}x, 買>=${cfg.revivalMinBuysH1}, cooldown ${cfg.revivalCooldownMin}分, 追加上昇 +${cfg.revivalEscalationPct}%`,

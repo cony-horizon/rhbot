@@ -50,7 +50,21 @@ export interface Breadth {
   reasons: string[];
 }
 
-export function assessBreadth(pair: DexPair, cfg: Config): Breadth {
+/**
+ * 厚みを認める取引件数の下限。規模で変える。
+ *
+ * $200K の銘柄に $1M クラスと同じ件数を求めると、実需があっても永遠に届かない。
+ * 逆にこの下限を一律で下げると、大型でバンドルされたものまで通ってしまう。
+ *
+ * この関数を検知と判定の両方から呼ぶことが重要で、片方だけ緩めると
+ * 「出来高が伴っているから通知する」と「出来高が過大だから危険」を
+ * 同じ銘柄について同時に言うことになる。
+ */
+export function breadthTxnBar(mc: number, cfg: Config): number {
+  return mc > 0 && mc < cfg.scamBreadthSmallMcUsd ? cfg.scamBreadthSmallMinTxns : cfg.scamBreadthMinTxns;
+}
+
+export function assessBreadth(pair: DexPair, cfg: Config, minTxns?: number): Breadth {
   const b = buys(pair, "h1");
   const sl = sells(pair, "h1");
   const txns = b + sl;
@@ -60,7 +74,9 @@ export function assessBreadth(pair: DexPair, cfg: Config): Breadth {
   const reasons: string[] = [];
   let points = 0;
 
-  const manyTxns = txns >= cfg.scamBreadthMinTxns;
+  const mc = pair.marketCap && pair.marketCap > 0 ? pair.marketCap : (pair.fdv ?? 0);
+  const bar = minTxns ?? breadthTxnBar(mc, cfg);
+  const manyTxns = txns >= bar;
   if (manyTxns) {
     points++;
     reasons.push(`取引 ${txns.toLocaleString("en-US")} 件`);

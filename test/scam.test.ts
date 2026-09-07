@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { assessBreadth, assessScam } from "../src/detectors/scam.js";
+import { detectNewLaunch } from "../src/detectors/newLaunch.js";
 import { NOW, makeConfig, makePair } from "./helpers.js";
 
 const cfg = makeConfig();
@@ -135,13 +136,16 @@ describe("assessBreadth — 参加者の厚みで本物とバンドルを分け�
     expect(b.organic).toBe(true);
   });
 
-  it("$PUMPS は厚みが 1 つも揃わない（少数・大口・買い偏重）", () => {
+  it("$PUMPS は必須条件（小口）を満たさないので厚みと認めない", () => {
     const b = assessBreadth(pumpsScam(), cfg);
     expect(b.txns).toBe(1_204);
     expect(b.avgTradeUsd).toBeGreaterThan(cfg.scamBreadthMaxAvgUsd);
     expect(b.buyShare).toBeGreaterThan(1 - cfg.scamBreadthBalance);
-    expect(b.points).toBe(0);
+    // 時価総額 $855K は小型側なので件数の下限は下がり、件数だけは満たす。
+    // それでも大口中心である以上、厚みとは認めない
+    expect(b.smallLots).toBe(false);
     expect(b.organic).toBe(false);
+    expect(assessScam(pumpsScam(), cfg, NOW).score).toBeGreaterThanOrEqual(cfg.scamScoreThreshold);
   });
 
   it("出来高が流動性の何倍かでは両者を分けられない（厚みが必要な理由）", () => {
@@ -217,5 +221,84 @@ describe("assessBreadth — 必須条件", () => {
     const p = snowballLegit();
     p.volume.h1 = 12_000_000; // 平均 $1,016
     expect(assessBreadth(p, cfg).organic).toBe(false);
+  });
+});
+
+describe("低時価総額レーン — 出来高が伴う小型を通す", () => {
+  /**
+   * 利用者が報告した型: $150K〜$200K でコールされ、$2M まで伸びた銘柄。
+   * 規模は小さいが、その規模に見合う出来高が実際に伴っていた。
+   */
+  function smallButBusy(over: Partial<{ mc: number; volH1: number; buys: number; sells: number }> = {}) {
+    const mc = over.mc ?? 220_000;
+    const p = makePair({
+      symbol: "SPROUT",
+      ageHours: 2,
+      price: 0.00022,
+      volH1: over.volH1 ?? 180_000,
+      volH24: 400_000,
+      liq: 60_000,
+      buysH1: over.buys ?? 520,
+      sellsH1: over.sells ?? 430,
+      changeH1: 140,
+    });
+    p.fdv = mc;
+    p.marketCap = mc;
+    return p;
+  }
+
+  it("時価総額が下限未満でも、出来高と厚みが揃えば新規として拾う", () => {
+    const d = detectNewLaunch(
+      { now: NOW, pair: smallButBusy(), ageMs: 2 * 3_600_000, lastAlert: null, lookbackMinPrice: null },
+      cfg,
+    )!;
+    expect(d).not.toBeNull();
+    expect(d.display.trigger).toBe("new_lowmc");
+    expect(d.display.lowMcVolToMc).toBeCloseTo(180_000 / 220_000, 2);
+    expect(d.reason).toContain("時価総額");
+  });
+
+  it("出来高が規模に見合わなければ通さない", () => {
+    // 時価総額 $220K に対し 1h $20K = 0.09 倍
+    const p = smallButBusy({ volH1: 20_000 });
+    expect(detectNewLaunch({ now: NOW, pair: p, ageMs: 2 * 3_600_000, lastAlert: null, lookbackMinPrice: null }, cfg)).toBeNull();
+  });
+
+  it("出来高があっても厚みが無ければ通さない（作られた出来高の抜け道にしない）", () => {
+    // 同じ出来高比を、少数の大口で作った場合
+    const p = smallButBusy({ buys: 40, sells: 12 });
+    expect(detectNewLaunch({ now: NOW, pair: p, ageMs: 2 * 3_600_000, lastAlert: null, lookbackMinPrice: null }, cfg)).toBeNull();
+  });
+
+  it("下限より小さい銘柄は通さない", () => {
+    const p = smallButBusy({ mc: 80_000 });
+    expect(detectNewLaunch({ now: NOW, pair: p, ageMs: 2 * 3_600_000, lastAlert: null, lookbackMinPrice: null }, cfg)).toBeNull();
+  });
+
+  it("設定で切れる（成績が悪ければ止められる）", () => {
+    const off = makeConfig({ NEW_LOW_MC_ENABLED: "false" });
+    expect(detectNewLaunch({ now: NOW, pair: smallButBusy(), ageMs: 2 * 3_600_000, lastAlert: null, lookbackMinPrice: null }, off)).toBeNull();
+  });
+
+  it("時価総額が下限以上の銘柄は従来どおり new 扱い", () => {
+    const p = smallButBusy({ mc: 3_000_000 });
+    const d = detectNewLaunch({ now: NOW, pair: p, ageMs: 2 * 3_600_000, lastAlert: null, lookbackMinPrice: null }, cfg)!;
+    expect(d.display.trigger).toBe("new");
+  });
+
+  it("プールが薄すぎる銘柄は通さない（出来高があっても出られない）", () => {
+    // 出来高比と厚みは満たすが、$220K の銘柄に $8K のプール。
+    // 全体の下限 MIN_LIQUIDITY_USD($5K) はこれを通してしまうので、レーン側で止める
+    const p = smallButBusy();
+    p.liquidity = { usd: 8_000, base: 0, quote: 0 };
+    expect(assessScam(p, cfg, NOW).score).toBeLessThan(cfg.scamScoreThreshold); // スキャム判定は止めてくれない
+    expect(detectNewLaunch({ now: NOW, pair: p, ageMs: 2 * 3_600_000, lastAlert: null, lookbackMinPrice: null }, cfg)).toBeNull();
+  });
+
+  it("流動性の下限は設定で変えられる", () => {
+    const loose = makeConfig({ NEW_LOW_MC_MIN_LIQUIDITY_USD: "5000" });
+    const p = smallButBusy();
+    p.liquidity = { usd: 8_000, base: 0, quote: 0 };
+    expect(detectNewLaunch({ now: NOW, pair: p, ageMs: 2 * 3_600_000, lastAlert: null, lookbackMinPrice: null }, loose)).not.toBeNull();
   });
 });

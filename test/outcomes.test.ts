@@ -180,3 +180,30 @@ describe("formatRecentOutcomes / jst", () => {
     expect(next.hour).toBe(0);
   });
 });
+
+describe("低MC レーンの成績を切り分ける", () => {
+  it("新規を一括りにせず、低MC だけの的中率を出す（試験運用の可否を判断するため）", () => {
+    const store = new Store(":memory:");
+    const base = NOW - 10 * H;
+    // 通常の新規 3 件（1 勝）
+    seed(store, { symbol: "N1", trigger: "new", kind: "new_launch", ts: base, path: [[0, 1], [60, 1.4], [240, 1.5]] });
+    seed(store, { symbol: "N2", trigger: "new", kind: "new_launch", ts: base + 10 * M, path: [[0, 1], [60, 0.9], [240, 0.7]] });
+    seed(store, { symbol: "N3", trigger: "new", kind: "new_launch", ts: base + 20 * M, path: [[0, 1], [60, 1.1], [240, 0.95]] });
+    // 低MC 3 件（3 勝）
+    seed(store, { symbol: "L1", trigger: "new_lowmc", kind: "new_launch", ts: base + 30 * M, path: [[0, 1], [60, 1.8], [240, 2.4]] });
+    seed(store, { symbol: "L2", trigger: "new_lowmc", kind: "new_launch", ts: base + 40 * M, path: [[0, 1], [60, 1.5], [240, 1.9]] });
+    seed(store, { symbol: "L3", trigger: "new_lowmc", kind: "new_launch", ts: base + 50 * M, path: [[0, 1], [60, 1.4], [240, 1.6]] });
+    computeOutcomes(store, cfg, NOW);
+
+    const { text } = buildDailyReport(store, cfg, NOW);
+    expect(text).toContain("🚀 新規");
+    expect(text).toContain("🌱 新規(低MC)");
+    // 別々の行として集計されている
+    const lowLine = text.split("\n").find((l) => l.includes("🌱 新規(低MC)"))!;
+    expect(lowLine).toContain("3件");
+    expect(lowLine).toContain("100%");
+    const newLine = text.split("\n").find((l) => l.includes("🚀 新規") && l.includes("件"))!;
+    expect(newLine).toContain("33%");
+    store.close();
+  });
+});

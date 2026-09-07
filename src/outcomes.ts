@@ -95,14 +95,21 @@ export interface ReportStats {
 
 export const TRIGGER_LABEL: Record<string, string> = {
   new: "🚀 新規",
+  new_lowmc: "🌱 新規(低MC)",
   reignite: "♻️ 再点火",
   dormant: "🔥 静穏から復活",
   breakout: "🔥 レンジ上抜け",
   fast: "🔥 急変",
 };
 
+/**
+ * 集計の単位になる経路。
+ * 新規を一括りにすると低MC レーンの成績が普通のレーンに埋もれて、
+ * 試験運用の可否を判断できない。記録された経路をそのまま使う。
+ */
 function triggerOf(a: AlertRow): string {
-  return a.kind === "new_launch" ? "new" : a.trigger || "dormant";
+  if (a.trigger) return a.trigger;
+  return a.kind === "new_launch" ? "new" : "dormant";
 }
 
 /** JST の日付文字列 YYYY-MM-DD と時刻 */

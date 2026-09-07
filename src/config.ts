@@ -45,6 +45,10 @@ export interface Config {
   newVolH1TiersUsd: number[];
   newMinBuysH1: number;
   newMinMcUsd: number;
+  newLowMcEnabled: boolean;
+  newLowMcFloorUsd: number;
+  newLowMcVolToMcRatio: number;
+  newLowMcMinLiquidityUsd: number;
 
   revivalEnabled: boolean;
   revivalMinAgeHours: number;
@@ -84,6 +88,8 @@ export interface Config {
   scamBreadthMaxAvgUsd: number;
   scamBreadthBalance: number;
   scamBreadthNeeded: number;
+  scamBreadthSmallMcUsd: number;
+  scamBreadthSmallMinTxns: number;
 
   volLevelMidUsd: number;
   volLevelHighUsd: number;
@@ -236,6 +242,12 @@ export function buildConfig(env: Env, strict = true): Config {
     newVolH1TiersUsd: numList(env, "NEW_VOL_H1_TIERS_USD", [25_000, 100_000, 500_000]),
     newMinBuysH1: num(env, "NEW_MIN_BUYS_H1", 15),
     newMinMcUsd: num(env, "NEW_MIN_MC_USD", 1_000_000),
+    // 低時価総額レーン（試験運用）。
+    // 時価総額が小さくても、それに見合う出来高と参加者の厚みがあるなら通す。
+    newLowMcEnabled: bool(env, "NEW_LOW_MC_ENABLED", true),
+    newLowMcFloorUsd: num(env, "NEW_LOW_MC_FLOOR_USD", 200_000),
+    newLowMcVolToMcRatio: num(env, "NEW_LOW_MC_VOL_TO_MC", 0.5),
+    newLowMcMinLiquidityUsd: num(env, "NEW_LOW_MC_MIN_LIQUIDITY_USD", 25_000),
 
     revivalEnabled: bool(env, "REVIVAL_ENABLED", true),
     revivalMinAgeHours: num(env, "REVIVAL_MIN_AGE_HOURS", 6),
@@ -275,6 +287,9 @@ export function buildConfig(env: Env, strict = true): Config {
     scamBreadthMaxAvgUsd: num(env, "SCAM_BREADTH_MAX_AVG_USD", 500),
     scamBreadthBalance: num(env, "SCAM_BREADTH_BALANCE", 0.4),
     scamBreadthNeeded: num(env, "SCAM_BREADTH_NEEDED", 2),
+    // 件数の下限は規模で変える。小型に大型と同じ件数を求めても実需があっても届かない
+    scamBreadthSmallMcUsd: num(env, "SCAM_BREADTH_SMALL_MC_USD", 1_000_000),
+    scamBreadthSmallMinTxns: num(env, "SCAM_BREADTH_SMALL_MIN_TXNS", 300),
 
     volLevelMidUsd: num(env, "VOL_LEVEL_MID_USD", 50_000),
     volLevelHighUsd: num(env, "VOL_LEVEL_HIGH_USD", 250_000),
