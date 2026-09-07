@@ -1,7 +1,8 @@
 import { ConfigError, loadConfig, type Config } from "./config.js";
 import { DexScreenerClient } from "./dexscreener.js";
 import { Engine } from "./engine.js";
-import { escapeHtml, fmtPrice, fmtUsd, formatAlertRow, formatPairRow, formatSuppressedRow } from "./format.js";
+import { escapeHtml, fmtPrice, fmtUsd, formatAlertRow, formatPairRow, formatSuppressedRow, formatWalletBuyRow, formatWalletRow } from "./format.js";
+import { formatRecentOutcomes } from "./outcomes.js";
 import { log, setLogLevel } from "./logger.js";
 import { RpcClient } from "./rpc.js";
 import { every, type ScheduledTask } from "./scheduler.js";
@@ -14,6 +15,10 @@ const COMMANDS = [
   { command: "alerts", description: "直近のアラート履歴" },
   { command: "test", description: "通知の見本を送って配信を確認" },
   { command: "filtered", description: "スキャム判定で止めた通知を見る" },
+  { command: "report", description: "日次レポート（成績と改善案）を今すぐ出す" },
+  { command: "outcomes", description: "直近の通知がその後どうなったか" },
+  { command: "smart", description: "早期に入っていたウォレット台帳" },
+  { command: "wallet", description: "ウォレットの買い履歴" },
   { command: "why", description: "指定アドレスのリスクを採点する" },
   { command: "watch", description: "アドレスを手動で監視に追加" },
   { command: "unwatch", description: "監視から外す" },
@@ -32,6 +37,8 @@ function helpText(): string {
     "🔥 復活スパイク: 20h 以上経過したペアで突発的な出来高と +30% 以上の価格上昇を検知",
     "",
     "🚫 バンドル・洗浄取引で出来高を作られた銘柄は自動で除外します（/filtered で確認）",
+    "📊 毎朝、前日の通知の成績と改善案を送ります（/report でいつでも）",
+    "⭐ 勝った復活銘柄の急騰前に買っていたウォレットを集めます（/smart）",
     "",
     "通知が来ないときは /status で監視ペア数を、/test で配信経路を確認してください。",
     "",
@@ -131,6 +138,8 @@ async function main(): Promise<void> {
             "<b>監視状況</b>",
             `ペア: hot ${tiers.hot} / dormant ${tiers.dormant} / dead ${tiers.dead} (pending ${store.countPending()})`,
             `優先監視: ${store.countPriority(cfg.priorityPeakMcUsd)} 件（全盛期 MC ${fmtUsd(cfg.priorityPeakMcUsd)} 超）を ${cfg.priorityPollIntervalSec}s ごとに確認`,
+            `日次レポート: 毎日 ${cfg.reportHourJst}:00 JST（最終送信 ${store.getKv("daily_report_date") ?? "-"}）`,
+            `ウォレット台帳: ⭐ ${store.countWallets(cfg.smartMinHits)} 件 / 全 ${store.countWallets(1)} 件${cfg.rpcUrl ? "" : "（RPC 未設定のため収穫停止）"}`,
             `直近 24h アラート: ${store.countAlertsSince(Date.now() - 86_400_000)} 件 (送信累計 ${s.alertsSent})`,
             `直近 24h フィルタ: ${store.countSuppressedSince(Date.now() - 86_400_000)} 件をスキャム判定で抑制 (累計 ${s.alertsSuppressed})`,
             `最終 discovery: ${s.lastDiscoveryAt ? new Date(s.lastDiscoveryAt).toISOString() : "-"} (+${s.lastDiscoveryAdded})`,
@@ -153,6 +162,35 @@ async function main(): Promise<void> {
         }
         case "test":
           return await engine.sendSampleAlert();
+        case "report":
+          return engine.buildReport();
+        case "outcomes": {
+          const n = Math.min(30, Number(args[0]) || 12);
+          return formatRecentOutcomes(store, Date.now(), n);
+        }
+        case "smart": {
+          const n = Math.min(30, Number(args[0]) || 15);
+          const rows = store.topWallets(n, 1);
+          if (rows.length === 0) {
+            return cfg.rpcUrl
+              ? "まだ台帳が空です。復活系の通知が「的中」と確定すると、その急騰前に買っていたウォレットを自動で集めます。"
+              : "スマートウォレットの収穫には RPC_URL が必要です（.env を確認してください）";
+          }
+          const smart = rows.filter((w) => w.hits >= cfg.smartMinHits);
+          return (
+            `<b>早期に入っていたウォレット</b>（${cfg.smartMinHits} 銘柄以上で ⭐）\n` +
+            rows.map((w) => formatWalletRow(w, cfg.smartMinHits)).join("\n") +
+            `\n\n⭐ ${smart.length} 件 / 全 ${store.countWallets(1)} 件。詳細は /wallet &lt;アドレス&gt;`
+          );
+        }
+        case "wallet": {
+          const addr = args[0];
+          if (!addr || !/^0x[0-9a-fA-F]{40}$/.test(addr)) return "使い方: /wallet &lt;ウォレットアドレス&gt;";
+          const w = store.getWallet(addr);
+          if (!w) return "このウォレットの記録はありません";
+          const buys = store.walletBuys(addr, 20);
+          return `${formatWalletRow(w, cfg.smartMinHits)}\n\n<b>買い履歴</b>\n` + buys.map(formatWalletBuyRow).join("\n");
+        }
         case "filtered": {
           const n = Math.min(20, Number(args[0]) || 10);
           const rows = store.recentSuppressed(n);
@@ -238,7 +276,13 @@ async function main(): Promise<void> {
     every("refresh:dead", 120_000, () => engine.refreshTier("dead", cfg.deadPollIntervalSec, 300).then(() => undefined)),
     every("pending", 60_000, () => engine.resolvePending().then(() => undefined)),
     every("maintain", 3_600_000, async () => engine.maintain(), { immediate: false }),
+    // 反省の材料づくり: 通知のその後を埋め、決めた時刻に日次レポートを送る
+    every("outcomes", 5 * 60_000, async () => void engine.runOutcomes(), { immediate: false }),
+    every("daily-report", 60_000, () => engine.maybeSendDailyReport().then(() => undefined), { immediate: false }),
   ];
+  if (rpc && cfg.smartWalletEnabled) {
+    tasks.push(every("harvest", 10 * 60_000, () => engine.runHarvests().then(() => undefined), { immediate: false }));
+  }
   if (rpc) tasks.push(every("rpc-scan", cfg.rpcScanIntervalSec * 1000, () => engine.scanRpc().then(() => undefined)));
 
   if (cfg.notifyOnStart) {

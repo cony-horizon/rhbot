@@ -67,6 +67,66 @@ export interface AlertRow {
   scam_reasons: string;
   /** 1 ならスコア超過で通知を止めたもの */
   suppressed: number;
+  /** 通知時点の時価総額 */
+  mc_usd: number;
+  /** 成立経路。new / reignite / dormant / breakout / fast */
+  trigger: string;
+  vol_h1: number;
+  buys_h1: number;
+  sells_h1: number;
+  /** 通知時点でのペア年齢（時間） */
+  age_hours: number | null;
+}
+
+/** 通知のその後。スナップショットから機械的に埋める */
+export interface OutcomeRow {
+  alert_id: number;
+  alert_ts: number;
+  base_price: number;
+  p15m: number | null;
+  p1h: number | null;
+  p4h: number | null;
+  p24h: number | null;
+  max_gain_pct: number | null;
+  max_gain_at: number | null;
+  max_dd_pct: number | null;
+  /** どの地平まで確定したか（ms）。24h で完了 */
+  done_until: number;
+  /** 4h 以内に HIT_PCT 以上 → 1、届かず → 0、未確定 → null */
+  hit: number | null;
+  bust: number | null;
+}
+
+export interface WalletRow {
+  address: string;
+  /** 早期に入っていた勝ち銘柄の数（銘柄単位） */
+  hits: number;
+  buys: number;
+  quote_volume: number;
+  first_seen: number;
+  last_seen: number;
+}
+
+export interface WalletBuyRow {
+  id: number;
+  wallet: string;
+  token_address: string;
+  pair_address: string;
+  alert_id: number;
+  symbol: string;
+  ts: number;
+  block: number;
+  quote_amount: number;
+  tx_hash: string;
+}
+
+export interface DailyReportRow {
+  date: string;
+  ts: number;
+  alerts: number;
+  hits: number;
+  hit_rate: number | null;
+  text: string;
 }
 
 export interface PendingRow {
@@ -139,9 +199,64 @@ CREATE TABLE IF NOT EXISTS alerts (
   summary TEXT NOT NULL DEFAULT '',
   scam_score INTEGER NOT NULL DEFAULT 0,
   scam_reasons TEXT NOT NULL DEFAULT '',
-  suppressed INTEGER NOT NULL DEFAULT 0
+  suppressed INTEGER NOT NULL DEFAULT 0,
+  mc_usd REAL NOT NULL DEFAULT 0,
+  trigger TEXT NOT NULL DEFAULT '',
+  vol_h1 REAL NOT NULL DEFAULT 0,
+  buys_h1 INTEGER NOT NULL DEFAULT 0,
+  sells_h1 INTEGER NOT NULL DEFAULT 0,
+  age_hours REAL
 );
 CREATE INDEX IF NOT EXISTS idx_alerts_kind_token_ts ON alerts(kind, token_address, ts);
+CREATE INDEX IF NOT EXISTS idx_alerts_ts ON alerts(ts);
+CREATE TABLE IF NOT EXISTS alert_outcomes (
+  alert_id INTEGER PRIMARY KEY,
+  alert_ts INTEGER NOT NULL,
+  base_price REAL NOT NULL,
+  p15m REAL, p1h REAL, p4h REAL, p24h REAL,
+  max_gain_pct REAL, max_gain_at INTEGER, max_dd_pct REAL,
+  done_until INTEGER NOT NULL DEFAULT 0,
+  hit INTEGER, bust INTEGER
+);
+CREATE TABLE IF NOT EXISTS daily_reports (
+  date TEXT PRIMARY KEY,
+  ts INTEGER NOT NULL,
+  alerts INTEGER NOT NULL,
+  hits INTEGER NOT NULL,
+  hit_rate REAL,
+  text TEXT NOT NULL
+);
+CREATE TABLE IF NOT EXISTS wallets (
+  address TEXT PRIMARY KEY,
+  hits INTEGER NOT NULL DEFAULT 0,
+  buys INTEGER NOT NULL DEFAULT 0,
+  quote_volume REAL NOT NULL DEFAULT 0,
+  first_seen INTEGER NOT NULL,
+  last_seen INTEGER NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_wallets_hits ON wallets(hits DESC, quote_volume DESC);
+CREATE TABLE IF NOT EXISTS wallet_buys (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  wallet TEXT NOT NULL,
+  token_address TEXT NOT NULL,
+  pair_address TEXT NOT NULL,
+  alert_id INTEGER NOT NULL,
+  symbol TEXT NOT NULL DEFAULT '',
+  ts INTEGER NOT NULL,
+  block INTEGER NOT NULL,
+  quote_amount REAL NOT NULL DEFAULT 0,
+  tx_hash TEXT NOT NULL,
+  UNIQUE(tx_hash, wallet, token_address)
+);
+CREATE INDEX IF NOT EXISTS idx_wallet_buys_wallet ON wallet_buys(wallet);
+CREATE TABLE IF NOT EXISTS harvests (
+  alert_id INTEGER PRIMARY KEY,
+  ts INTEGER NOT NULL,
+  status TEXT NOT NULL,
+  swaps INTEGER NOT NULL DEFAULT 0,
+  buyers INTEGER NOT NULL DEFAULT 0,
+  note TEXT NOT NULL DEFAULT ''
+);
 CREATE TABLE IF NOT EXISTS pending_pairs (
   pair_address TEXT PRIMARY KEY,
   source TEXT NOT NULL DEFAULT '',
@@ -171,6 +286,12 @@ export class Store {
       ["scam_score", "INTEGER NOT NULL DEFAULT 0"],
       ["scam_reasons", "TEXT NOT NULL DEFAULT ''"],
       ["suppressed", "INTEGER NOT NULL DEFAULT 0"],
+      ["mc_usd", "REAL NOT NULL DEFAULT 0"],
+      ["trigger", "TEXT NOT NULL DEFAULT ''"],
+      ["vol_h1", "REAL NOT NULL DEFAULT 0"],
+      ["buys_h1", "INTEGER NOT NULL DEFAULT 0"],
+      ["sells_h1", "INTEGER NOT NULL DEFAULT 0"],
+      ["age_hours", "REAL"],
     ];
     for (const [name, def] of added) {
       if (!cols.has(name)) this.db.exec(`ALTER TABLE alerts ADD COLUMN ${name} ${def}`);
@@ -532,11 +653,12 @@ export class Store {
     );
   }
 
-  insertAlert(a: Omit<AlertRow, "id">): void {
-    this.db
+  insertAlert(a: Omit<AlertRow, "id">): number {
+    const res = this.db
       .prepare(
-        `INSERT INTO alerts(kind, token_address, pair_address, ts, level, price_usd, symbol, summary, scam_score, scam_reasons, suppressed)
-         VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+        `INSERT INTO alerts(kind, token_address, pair_address, ts, level, price_usd, symbol, summary, scam_score, scam_reasons, suppressed,
+                            mc_usd, trigger, vol_h1, buys_h1, sells_h1, age_hours)
+         VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
       )
       .run(
         a.kind,
@@ -550,7 +672,190 @@ export class Store {
         a.scam_score,
         a.scam_reasons,
         a.suppressed,
+        a.mc_usd,
+        a.trigger,
+        a.vol_h1,
+        a.buys_h1,
+        a.sells_h1,
+        a.age_hours,
       );
+    return Number(res.lastInsertRowid);
+  }
+
+  getAlert(id: number): AlertRow | null {
+    return (this.db.prepare("SELECT * FROM alerts WHERE id = ?").get(id) as AlertRow | undefined) ?? null;
+  }
+
+  /* ---------- 通知のその後（結果追跡） ---------- */
+
+  /**
+   * 結果をまだ確定しきっていない通知。
+   * 15 分経過したものから対象にし、24h の地平まで埋まったら卒業する。
+   * 通知しなかった（止めた）ものも含める。止めた中の逸材を知ることがフィルタ調整の材料になる。
+   */
+  listAlertsNeedingOutcome(now: number, maxAgeMs: number): (AlertRow & { done_until: number | null })[] {
+    return this.db
+      .prepare(
+        `SELECT a.*, o.done_until AS done_until
+         FROM alerts a LEFT JOIN alert_outcomes o ON o.alert_id = a.id
+         WHERE a.ts <= ? AND a.ts >= ? AND a.price_usd IS NOT NULL AND a.price_usd > 0
+           AND (o.done_until IS NULL OR o.done_until < ?)
+         ORDER BY a.ts ASC LIMIT 500`,
+      )
+      .all(now - 15 * 60_000, now - maxAgeMs, 24 * 3_600_000) as unknown as (AlertRow & { done_until: number | null })[];
+  }
+
+  /** 指定時刻に最も近いスナップショットの価格（許容範囲内に無ければ null） */
+  priceNear(pairAddress: string, ts: number, beforeMs: number, afterMs: number): number | null {
+    const row = this.db
+      .prepare(
+        `SELECT price_usd FROM snapshots
+         WHERE pair_address = ? AND ts BETWEEN ? AND ? AND price_usd IS NOT NULL AND price_usd > 0
+         ORDER BY ABS(ts - ?) ASC LIMIT 1`,
+      )
+      .get(pairAddress.toLowerCase(), ts - beforeMs, ts + afterMs, ts) as { price_usd: number } | undefined;
+    return row?.price_usd ?? null;
+  }
+
+  /** 区間内の最高値・最安値と、最高値をつけた時刻 */
+  priceExtremesBetween(pairAddress: string, fromTs: number, toTs: number): { max: number; min: number; maxTs: number } | null {
+    const row = this.db
+      .prepare(
+        `SELECT MAX(price_usd) AS mx, MIN(price_usd) AS mn FROM snapshots
+         WHERE pair_address = ? AND ts > ? AND ts <= ? AND price_usd IS NOT NULL AND price_usd > 0`,
+      )
+      .get(pairAddress.toLowerCase(), fromTs, toTs) as { mx: number | null; mn: number | null } | undefined;
+    if (!row || row.mx === null || row.mn === null) return null;
+    const at = this.db
+      .prepare("SELECT ts FROM snapshots WHERE pair_address = ? AND ts > ? AND ts <= ? AND price_usd = ? ORDER BY ts ASC LIMIT 1")
+      .get(pairAddress.toLowerCase(), fromTs, toTs, row.mx) as { ts: number } | undefined;
+    return { max: row.mx, min: row.mn, maxTs: at?.ts ?? toTs };
+  }
+
+  upsertOutcome(o: OutcomeRow): void {
+    this.db
+      .prepare(
+        `INSERT INTO alert_outcomes(alert_id, alert_ts, base_price, p15m, p1h, p4h, p24h, max_gain_pct, max_gain_at, max_dd_pct, done_until, hit, bust)
+         VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+         ON CONFLICT(alert_id) DO UPDATE SET
+           p15m = excluded.p15m, p1h = excluded.p1h, p4h = excluded.p4h, p24h = excluded.p24h,
+           max_gain_pct = excluded.max_gain_pct, max_gain_at = excluded.max_gain_at, max_dd_pct = excluded.max_dd_pct,
+           done_until = excluded.done_until, hit = excluded.hit, bust = excluded.bust`,
+      )
+      .run(o.alert_id, o.alert_ts, o.base_price, o.p15m, o.p1h, o.p4h, o.p24h, o.max_gain_pct, o.max_gain_at, o.max_dd_pct, o.done_until, o.hit, o.bust);
+  }
+
+  getOutcome(alertId: number): OutcomeRow | null {
+    return (this.db.prepare("SELECT * FROM alert_outcomes WHERE alert_id = ?").get(alertId) as OutcomeRow | undefined) ?? null;
+  }
+
+  /** 期間内の通知と結果を結合して返す（レポート用） */
+  listAlertsWithOutcomes(fromTs: number, toTs: number): (AlertRow & Partial<OutcomeRow>)[] {
+    return this.db
+      .prepare(
+        `SELECT a.*, o.base_price, o.p15m, o.p1h, o.p4h, o.p24h, o.max_gain_pct, o.max_gain_at, o.max_dd_pct, o.done_until, o.hit, o.bust
+         FROM alerts a LEFT JOIN alert_outcomes o ON o.alert_id = a.id
+         WHERE a.ts >= ? AND a.ts < ? ORDER BY a.ts ASC`,
+      )
+      .all(fromTs, toTs) as unknown as (AlertRow & Partial<OutcomeRow>)[];
+  }
+
+  saveDailyReport(r: DailyReportRow): void {
+    this.db
+      .prepare(
+        `INSERT INTO daily_reports(date, ts, alerts, hits, hit_rate, text) VALUES(?, ?, ?, ?, ?, ?)
+         ON CONFLICT(date) DO UPDATE SET ts = excluded.ts, alerts = excluded.alerts, hits = excluded.hits, hit_rate = excluded.hit_rate, text = excluded.text`,
+      )
+      .run(r.date, r.ts, r.alerts, r.hits, r.hit_rate, r.text);
+  }
+
+  getDailyReport(date: string): DailyReportRow | null {
+    return (this.db.prepare("SELECT * FROM daily_reports WHERE date = ?").get(date) as DailyReportRow | undefined) ?? null;
+  }
+
+  recentDailyReports(limit: number): DailyReportRow[] {
+    return this.db.prepare("SELECT * FROM daily_reports ORDER BY date DESC LIMIT ?").all(limit) as unknown as DailyReportRow[];
+  }
+
+  /* ---------- スマートウォレット ---------- */
+
+  /** 収穫の要否。勝ちと確定した復活系の通知で、まだ収穫していないもの */
+  listAlertsToHarvest(limit: number): (AlertRow & { hit: number })[] {
+    return this.db
+      .prepare(
+        `SELECT a.*, o.hit AS hit FROM alerts a
+         JOIN alert_outcomes o ON o.alert_id = a.id
+         LEFT JOIN harvests h ON h.alert_id = a.id
+         WHERE a.kind = 'revival' AND o.hit = 1 AND h.alert_id IS NULL
+         ORDER BY a.ts DESC LIMIT ?`,
+      )
+      .all(limit) as unknown as (AlertRow & { hit: number })[];
+  }
+
+  markHarvest(alertId: number, now: number, status: string, swaps: number, buyers: number, note = ""): void {
+    this.db
+      .prepare(
+        `INSERT INTO harvests(alert_id, ts, status, swaps, buyers, note) VALUES(?, ?, ?, ?, ?, ?)
+         ON CONFLICT(alert_id) DO UPDATE SET ts = excluded.ts, status = excluded.status, swaps = excluded.swaps, buyers = excluded.buyers, note = excluded.note`,
+      )
+      .run(alertId, now, status, swaps, buyers, note);
+  }
+
+  /** 買いの記録を追加し、触れたウォレットの集計を更新する。戻り値は新規に記録できた件数 */
+  recordWalletBuys(rows: Omit<WalletBuyRow, "id">[]): number {
+    const ins = this.db.prepare(
+      `INSERT OR IGNORE INTO wallet_buys(wallet, token_address, pair_address, alert_id, symbol, ts, block, quote_amount, tx_hash)
+       VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+    );
+    let added = 0;
+    const touched = new Set<string>();
+    for (const r of rows) {
+      const res = ins.run(r.wallet.toLowerCase(), r.token_address.toLowerCase(), r.pair_address.toLowerCase(), r.alert_id, r.symbol, r.ts, r.block, r.quote_amount, r.tx_hash.toLowerCase());
+      if (Number(res.changes) > 0) added++;
+      touched.add(r.wallet.toLowerCase());
+    }
+    for (const w of touched) this.refreshWallet(w);
+    return added;
+  }
+
+  /** wallet_buys から 1 ウォレットの集計をやり直す（hits は銘柄単位で数える） */
+  refreshWallet(address: string): void {
+    const agg = this.db
+      .prepare(
+        `SELECT COUNT(DISTINCT token_address) AS hits, COUNT(*) AS buys, COALESCE(SUM(quote_amount), 0) AS qv,
+                MIN(ts) AS first_seen, MAX(ts) AS last_seen
+         FROM wallet_buys WHERE wallet = ?`,
+      )
+      .get(address.toLowerCase()) as { hits: number; buys: number; qv: number; first_seen: number | null; last_seen: number | null };
+    if (!agg.first_seen || !agg.last_seen) return;
+    this.db
+      .prepare(
+        `INSERT INTO wallets(address, hits, buys, quote_volume, first_seen, last_seen) VALUES(?, ?, ?, ?, ?, ?)
+         ON CONFLICT(address) DO UPDATE SET hits = excluded.hits, buys = excluded.buys, quote_volume = excluded.quote_volume,
+           first_seen = excluded.first_seen, last_seen = excluded.last_seen`,
+      )
+      .run(address.toLowerCase(), agg.hits, agg.buys, agg.qv, agg.first_seen, agg.last_seen);
+  }
+
+  topWallets(limit: number, minHits = 1): WalletRow[] {
+    return this.db
+      .prepare("SELECT * FROM wallets WHERE hits >= ? ORDER BY hits DESC, quote_volume DESC LIMIT ?")
+      .all(minHits, limit) as unknown as WalletRow[];
+  }
+
+  getWallet(address: string): WalletRow | null {
+    return (this.db.prepare("SELECT * FROM wallets WHERE address = ?").get(address.toLowerCase()) as WalletRow | undefined) ?? null;
+  }
+
+  walletBuys(address: string, limit = 30): WalletBuyRow[] {
+    return this.db
+      .prepare("SELECT * FROM wallet_buys WHERE wallet = ? ORDER BY ts DESC LIMIT ?")
+      .all(address.toLowerCase(), limit) as unknown as WalletBuyRow[];
+  }
+
+  countWallets(minHits: number): number {
+    const row = this.db.prepare("SELECT COUNT(*) AS n FROM wallets WHERE hits >= ?").get(minHits) as { n: number };
+    return row.n;
   }
 
   recentAlerts(limit: number): AlertRow[] {

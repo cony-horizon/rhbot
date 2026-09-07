@@ -1,7 +1,7 @@
 import type { DexPair } from "./dexscreener.js";
 import type { Detection } from "./detectors/types.js";
 import type { ScamAssessment } from "./detectors/scam.js";
-import type { PairRow, AlertRow } from "./store.js";
+import type { PairRow, AlertRow, WalletRow, WalletBuyRow } from "./store.js";
 
 export function escapeHtml(s: string): string {
   return s.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
@@ -222,4 +222,18 @@ export function formatSuppressedRow(a: AlertRow): string {
     .map((r) => `\n    ・${escapeHtml(r)}`)
     .join("");
   return `🚫 ${when} <b>$${escapeHtml(a.symbol)}</b> リスク ${a.scam_score}/100${reasons}\n    <code>${escapeHtml(a.token_address)}</code>`;
+}
+
+/** ウォレット台帳の 1 行 */
+export function formatWalletRow(w: WalletRow, smartFrom: number): string {
+  const star = w.hits >= smartFrom ? "⭐ " : "　 ";
+  const short = `${w.address.slice(0, 6)}…${w.address.slice(-4)}`;
+  const last = fmtAge(Date.now() - w.last_seen);
+  return `${star}<code>${escapeHtml(short)}</code>  ${w.hits} 銘柄 / ${w.buys} 回 / ${fmtUsd(w.quote_volume)} 相当  最終 ${last}前`;
+}
+
+/** ウォレットの買い 1 件 */
+export function formatWalletBuyRow(b: WalletBuyRow): string {
+  const when = new Date(b.ts).toISOString().replace("T", " ").slice(5, 16);
+  return `・${when} <b>$${escapeHtml(b.symbol)}</b> ${fmtUsd(b.quote_amount)} 相当`;
 }

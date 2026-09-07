@@ -110,6 +110,62 @@ export class RpcClient {
     return Number.parseInt(hex, 16);
   }
 
+  /** ブロック番号（または "latest"）→ 番号と UNIX 秒 */
+  async getBlockByNumber(tag: number | "latest"): Promise<{ number: number; timestamp: number } | null> {
+    const param = tag === "latest" ? "latest" : "0x" + tag.toString(16);
+    const b = await this.call<{ number: string; timestamp: string } | null>("eth_getBlockByNumber", [param, false]);
+    if (!b) return null;
+    return { number: Number.parseInt(b.number, 16), timestamp: Number.parseInt(b.timestamp, 16) };
+  }
+
+  /** 読み取り専用の eth_call。ERC-20 の decimals() 取得などに使う */
+  async ethCall(to: string, data: string): Promise<string> {
+    return this.call<string>("eth_call", [{ to, data }, "latest"]);
+  }
+
+  /**
+   * JSON-RPC バッチ。公開 RPC がバッチを拒む場合は逐次実行に落とす。
+   * 結果は呼び出し順に並べ、失敗した要素は null。
+   */
+  async batch<T>(calls: { method: string; params: unknown[] }[]): Promise<(T | null)[]> {
+    if (calls.length === 0) return [];
+    const ids = calls.map(() => this.id++);
+    const ctrl = new AbortController();
+    const timer = setTimeout(() => ctrl.abort(), this.timeoutMs * 2);
+    try {
+      const res = await this.fetchImpl(this.url, {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify(calls.map((c, i) => ({ jsonrpc: "2.0", id: ids[i], method: c.method, params: c.params }))),
+        signal: ctrl.signal,
+      });
+      if (res.ok) {
+        const body = (await res.json()) as unknown;
+        if (Array.isArray(body)) {
+          const byId = new Map<number, { result?: T; error?: unknown }>();
+          for (const item of body as { id: number; result?: T; error?: unknown }[]) byId.set(item.id, item);
+          return ids.map((id) => {
+            const item = byId.get(id);
+            return item && !item.error && item.result !== undefined ? item.result : null;
+          });
+        }
+      }
+    } catch {
+      // バッチ非対応や一時的失敗 → 逐次へ
+    } finally {
+      clearTimeout(timer);
+    }
+    const out: (T | null)[] = [];
+    for (const c of calls) {
+      try {
+        out.push(await this.call<T>(c.method, c.params));
+      } catch {
+        out.push(null);
+      }
+    }
+    return out;
+  }
+
   async getLogs(fromBlock: number, toBlock: number, topics: (string | string[] | null)[], addresses?: string[]): Promise<RawLog[]> {
     const filter: Record<string, unknown> = {
       fromBlock: "0x" + fromBlock.toString(16),

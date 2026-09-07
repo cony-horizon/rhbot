@@ -85,6 +85,21 @@ export interface Config {
   volLevelHighUsd: number;
   txnSkewShow: number;
 
+  /** 結果追跡: 何 % 上がれば「的中」か / その猶予 / 何 % 下がれば「失敗」か */
+  outcomeHitPct: number;
+  outcomeHitWindowHours: number;
+  outcomeBustPct: number;
+  /** 日次レポート */
+  reportEnabled: boolean;
+  reportHourJst: number;
+  reportMinSamples: number;
+  /** スマートウォレット収穫（RPC が必要） */
+  smartWalletEnabled: boolean;
+  smartMinHits: number;
+  smartHarvestWindowHours: number;
+  smartMaxSwaps: number;
+  rpcBlockTimeMs: number;
+
   dbPath: string;
   snapshotRetentionHours: number;
   logLevel: LogLevel;
@@ -256,6 +271,18 @@ export function buildConfig(env: Env, strict = true): Config {
     volLevelMidUsd: num(env, "VOL_LEVEL_MID_USD", 50_000),
     volLevelHighUsd: num(env, "VOL_LEVEL_HIGH_USD", 250_000),
     txnSkewShow: num(env, "TXN_SKEW_SHOW", 0.65),
+
+    outcomeHitPct: num(env, "OUTCOME_HIT_PCT", 30),
+    outcomeHitWindowHours: num(env, "OUTCOME_HIT_WINDOW_HOURS", 4),
+    outcomeBustPct: num(env, "OUTCOME_BUST_PCT", 50),
+    reportEnabled: bool(env, "REPORT_ENABLED", true),
+    reportHourJst: num(env, "REPORT_HOUR_JST", 9),
+    reportMinSamples: num(env, "REPORT_MIN_SAMPLES", 4),
+    smartWalletEnabled: bool(env, "SMART_WALLET_ENABLED", true),
+    smartMinHits: num(env, "SMART_MIN_HITS", 2),
+    smartHarvestWindowHours: num(env, "SMART_HARVEST_WINDOW_HOURS", 6),
+    smartMaxSwaps: num(env, "SMART_MAX_SWAPS", 3000),
+    rpcBlockTimeMs: num(env, "RPC_BLOCK_TIME_MS", 250),
 
     dbPath: str(env, "DB_PATH", "./data/bot.sqlite"),
     snapshotRetentionHours: num(env, "SNAPSHOT_RETENTION_HOURS", 96),

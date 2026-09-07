@@ -10,6 +10,8 @@ import { formatAlert, type AlertViewOptions } from "./format.js";
 import { log } from "./logger.js";
 import { PoolScanner, RpcClient } from "./rpc.js";
 import type { Store, Tier } from "./store.js";
+import { buildDailyReport, computeOutcomes, jst } from "./outcomes.js";
+import { SwapHarvester } from "./smartwallets.js";
 
 /** discovery が何回続けて空振りしたら利用者に知らせるか */
 const HEALTH_EMPTY_THRESHOLD = 5;
@@ -50,6 +52,8 @@ export class Engine {
   private mutedUntil = 0;
   /** 通知の見せ方に関わる設定をまとめたもの */
   private readonly view: AlertViewOptions;
+  /** RPC がある場合だけ、勝ち銘柄の早期買いウォレットを収穫する */
+  private readonly harvester: SwapHarvester | null;
   private readonly scanner: PoolScanner | null;
 
   constructor(
@@ -66,6 +70,7 @@ export class Engine {
       txnSkewShow: cfg.txnSkewShow,
       scamShowScoreFrom: cfg.scamShowScoreFrom,
     };
+    this.harvester = rpc && cfg.smartWalletEnabled ? new SwapHarvester(rpc, store, cfg) : null;
     this.scanner = rpc
       ? new PoolScanner(
           rpc,
@@ -385,6 +390,7 @@ export class Engine {
     const chosen = candidates.some((c) => c.kind === "revival") ? candidates.filter((c) => c.kind === "revival") : candidates;
 
     for (const d of chosen) {
+      // 反省に使う属性も一緒に残す。あとから「どういう通知が当たったか」を集計するため
       this.store.insertAlert({
         kind: d.kind,
         token_address: token,
@@ -397,6 +403,12 @@ export class Engine {
         scam_score: scam.score,
         scam_reasons: scam.signals.map((sig) => sig.label).join("\n"),
         suppressed: blocked ? 1 : 0,
+        mc_usd: p.marketCap && p.marketCap > 0 ? p.marketCap : (p.fdv ?? 0),
+        trigger: d.kind === "new_launch" ? "new" : (d.display.trigger ?? "dormant"),
+        vol_h1: d.metrics.volH1,
+        buys_h1: d.metrics.buysH1,
+        sells_h1: d.metrics.sellsH1,
+        age_hours: age === null ? null : age / HOUR_MS,
       });
       out.push(d);
 
@@ -419,6 +431,69 @@ export class Engine {
       }
     }
     return out;
+  }
+
+  /* ---------------- 反省: 結果追跡と日次レポート ---------------- */
+
+  /** 通知の「その後」を埋める。スナップショットから計算するので API 呼び出しは無い */
+  runOutcomes(): number {
+    return computeOutcomes(this.store, this.cfg, this.now());
+  }
+
+  /** 日次レポート本文（/report とスケジュール送信の両方で使う） */
+  buildReport(): string {
+    return buildDailyReport(this.store, this.cfg, this.now()).text;
+  }
+
+  /**
+   * 1 日 1 回、決めた時刻（JST）を過ぎていたらレポートを送る。
+   * 送った日付を kv に残し、再起動しても二重送信しない。
+   */
+  async maybeSendDailyReport(): Promise<boolean> {
+    if (!this.cfg.reportEnabled) return false;
+    const now = this.now();
+    const { date, hour } = jst(now);
+    if (hour < this.cfg.reportHourJst) return false;
+    if (this.store.getKv("daily_report_date") === date) return false;
+    const { text, stats } = buildDailyReport(this.store, this.cfg, now);
+    this.store.saveDailyReport({ date, ts: now, alerts: stats.judged, hits: stats.hits, hit_rate: stats.hitRate, text });
+    this.store.setKv("daily_report_date", date);
+    try {
+      await this.sink.broadcast(text);
+      log.info(`日次レポート送信 (${date}): 通知 ${stats.judged} 件 / 的中 ${stats.hits}`);
+    } catch (err) {
+      log.error("日次レポートの送信に失敗", err);
+    }
+    return true;
+  }
+
+  /* ---------------- スマートウォレット ---------------- */
+
+  /**
+   * 勝ちと確定した復活銘柄について、急騰前に買っていたウォレットを集める。
+   * 1 回の実行で処理する件数を絞り、公開 RPC に負荷を掛けすぎないようにする。
+   */
+  async runHarvests(maxPerRun = 2): Promise<number> {
+    if (!this.harvester) return 0;
+    const now = this.now();
+    const targets = this.store.listAlertsToHarvest(maxPerRun);
+    let done = 0;
+    for (const a of targets) {
+      const pair = this.store.getPair(a.pair_address);
+      if (!pair) {
+        this.store.markHarvest(a.id, now, "error", 0, 0, "pair not found");
+        continue;
+      }
+      try {
+        const r = await this.harvester.harvest(a, pair);
+        this.store.markHarvest(a.id, now, r.status, r.swaps, r.buyers, r.note ?? "");
+        done++;
+      } catch (err) {
+        this.store.markHarvest(a.id, now, "error", 0, 0, err instanceof Error ? err.message.slice(0, 200) : String(err));
+        log.warn(`harvest 失敗 $${a.symbol}`, err);
+      }
+    }
+    return done;
   }
 
   /* ---------------- メンテナンス ---------------- */

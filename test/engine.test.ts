@@ -410,3 +410,57 @@ describe("Store — 既存 DB の移行", () => {
     fs.rmSync(dir, { recursive: true, force: true });
   });
 });
+
+describe("Engine — 反省の材料と収穫", () => {
+  it("通知に反省用の属性（時価総額・経路・出来高・売買件数・年齢）を残す", async () => {
+    const { dex, engine, store } = setup();
+    const p = makePair({ ageHours: 3, volH1: 60_000, volH24: 150_000, liq: 45_000, buysH1: 90, sellsH1: 60 });
+    p.marketCap = 2_400_000;
+    p.fdv = 2_400_000;
+    dex.searchResults = [p];
+    await engine.discover();
+    const a = store.recentAlerts(1)[0]!;
+    expect(a.trigger).toBe("new");
+    expect(a.mc_usd).toBe(2_400_000);
+    expect(a.vol_h1).toBe(60_000);
+    expect(a.buys_h1).toBe(90);
+    expect(a.sells_h1).toBe(60);
+    expect(a.age_hours).toBeCloseTo(3, 1);
+  });
+
+  it("結果追跡 → 日次レポート送信。同じ日に二度は送らない", async () => {
+    const { dex, sent, engine, store, setNow } = setup({ REPORT_HOUR_JST: "0" });
+    const p = makePair({ ageHours: 3, volH1: 60_000, volH24: 150_000, liq: 45_000, buysH1: 90, sellsH1: 60 });
+    p.marketCap = 2_400_000;
+    p.fdv = 2_400_000;
+    dex.searchResults = [p];
+    await engine.discover(); // 通知 1 件
+    // 5 時間分の値動きを記録する（+50% → 的中）
+    const live = dex.pairs.get(p.pairAddress.toLowerCase())!;
+    for (let m = 15; m <= 300; m += 15) {
+      setNow(NOW + m * 60_000);
+      live.priceUsd = String(0.001 * (1 + Math.min(0.5, m / 200)));
+      await engine.refreshTier("hot", 1);
+    }
+    expect(engine.runOutcomes()).toBeGreaterThan(0);
+    expect(store.getOutcome(1)!.hit).toBe(1);
+
+    sent.length = 0;
+    expect(await engine.maybeSendDailyReport()).toBe(true);
+    expect(sent).toHaveLength(1);
+    expect(sent[0]).toContain("日次レポート");
+    expect(sent[0]).toContain("的中");
+    expect(await engine.maybeSendDailyReport()).toBe(false); // 同日は送らない
+    expect(store.recentDailyReports(1)).toHaveLength(1);
+  });
+
+  it("/report は判定前でも文章を返す", async () => {
+    const { engine } = setup();
+    expect(engine.buildReport()).toContain("日次レポート");
+  });
+
+  it("RPC が無ければ収穫はスキップ、あっても対象が無ければ 0", async () => {
+    const { engine } = setup();
+    expect(await engine.runHarvests()).toBe(0);
+  });
+});
