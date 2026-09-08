@@ -83,6 +83,48 @@ describe("computeOutcomes — 通知のその後を埋める", () => {
     store.close();
   });
 
+  it("枯れたプールの張り付き価格を利益に数えない（+39741% の正体）", () => {
+    const store = new Store(":memory:");
+    const addr = "0xpair_dead";
+    const p = makePair({ address: addr, token: "0xtok_dead", symbol: "DEAD", price: 1, liq: 50_000 });
+    const ts = NOW - 6 * H;
+    store.upsertPair(p, "test", ts);
+    const id = store.insertAlert({
+      kind: "new_launch", token_address: p.baseToken.address, pair_address: addr, ts, level: 1, price_usd: 1, symbol: "DEAD",
+      summary: "t", scam_score: 0, scam_reasons: "", suppressed: 0, mc_usd: 1_000_000, trigger: "new", vol_h1: 0, buys_h1: 0, sells_h1: 0, age_hours: 1,
+    });
+    // 正常な区間: 流動性 $50K で +20% まで
+    store.insertSnapshot(makePair({ address: addr, token: p.baseToken.address, price: 1.0, liq: 50_000 }), ts);
+    store.insertSnapshot(makePair({ address: addr, token: p.baseToken.address, price: 1.2, liq: 50_000 }), ts + 30 * M);
+    // 流動性が抜かれ、最後の約定価格 $400 が張り付いたまま 4 時間
+    for (let m = 68; m <= 300; m += 30) {
+      store.insertSnapshot(makePair({ address: addr, token: p.baseToken.address, price: 400, liq: 300 }), ts + m * M);
+    }
+    computeOutcomes(store, cfg, NOW);
+    const o = store.getOutcome(id)!;
+    expect(o.max_gain_pct).toBeCloseTo(20, 0); // 39900% ではない
+    expect(o.hit).toBe(0);
+    expect(o.p4h).toBeNull(); // 売れない価格しか無い時点は「不明」
+    store.close();
+  });
+
+  it("流動性が抜かれた損失はそのまま数える（ラグを無かったことにしない）", () => {
+    const store = new Store(":memory:");
+    const addr = "0xpair_rug";
+    const p = makePair({ address: addr, token: "0xtok_rug", symbol: "RUG", price: 1, liq: 50_000 });
+    const ts = NOW - 6 * H;
+    store.upsertPair(p, "test", ts);
+    const id = store.insertAlert({
+      kind: "new_launch", token_address: p.baseToken.address, pair_address: addr, ts, level: 1, price_usd: 1, symbol: "RUG",
+      summary: "t", scam_score: 0, scam_reasons: "", suppressed: 0, mc_usd: 1_000_000, trigger: "new", vol_h1: 0, buys_h1: 0, sells_h1: 0, age_hours: 1,
+    });
+    store.insertSnapshot(makePair({ address: addr, token: p.baseToken.address, price: 1.0, liq: 50_000 }), ts);
+    store.insertSnapshot(makePair({ address: addr, token: p.baseToken.address, price: 0.001, liq: 100 }), ts + 30 * M);
+    computeOutcomes(store, cfg, NOW);
+    expect(store.getOutcome(id)!.max_dd_pct).toBeLessThan(-99);
+    store.close();
+  });
+
   it("止めた通知も追跡する（フィルタが厳しすぎないかを知るため）", () => {
     const store = new Store(":memory:");
     const { id } = seed(store, { symbol: "GEM", trigger: "dormant", suppressed: 1, score: 55, path: [[0, 1], [60, 1.5], [240, 1.8]] });
@@ -126,7 +168,93 @@ describe("buildDailyReport — 反省の材料", () => {
     expect(text).toContain("$N2");
     expect(text).toContain("止めたが伸びた銘柄");
     expect(text).toContain("$GEM");
-    expect(text).toContain("SCAM_SCORE_THRESHOLD を 60");
+    // 60 で GEM(55) が通り、TRASH(80) は通らない。70/80 は同じ集合なので並べない
+    expect(text).toContain("60 → +1件 通る、うち的中 1件（100%）");
+    expect(text).not.toContain("70 →");
+    expect(text).toContain("SCAM_SCORE_THRESHOLD=60 まで上げる余地あり");
+    store.close();
+  });
+
+  it("止めた中の勝ちより負けが多ければ、しきい値は据え置きと判断する", () => {
+    const store = new Store(":memory:");
+    const base = NOW - 10 * H;
+    seed(store, { symbol: "S1", trigger: "reignite", ts: base, path: [[0, 1], [60, 1.5], [240, 1.6]] });
+    seed(store, { symbol: "S2", trigger: "reignite", ts: base + M, path: [[0, 1], [60, 1.4], [240, 1.5]] });
+    // 止めた 4 件: 勝ち 1、負け 3。全部リスク 55 なので 60 に上げると全部通る
+    seed(store, { symbol: "W", trigger: "dormant", suppressed: 1, score: 55, ts: base + 2 * M, path: [[0, 1], [60, 1.6], [240, 2]] });
+    seed(store, { symbol: "L1", trigger: "dormant", suppressed: 1, score: 55, ts: base + 3 * M, path: [[0, 1], [60, 0.7], [240, 0.5]] });
+    seed(store, { symbol: "L2", trigger: "dormant", suppressed: 1, score: 55, ts: base + 4 * M, path: [[0, 1], [60, 0.8], [240, 0.6]] });
+    seed(store, { symbol: "L3", trigger: "dormant", suppressed: 1, score: 55, ts: base + 5 * M, path: [[0, 1], [60, 0.9], [240, 0.7]] });
+    computeOutcomes(store, cfg, NOW);
+    const { text } = buildDailyReport(store, cfg, NOW);
+    expect(text).toContain("止めたが伸びた銘柄");
+    expect(text).toContain("60 → +4件 通る、うち的中 1件（25%） ← 全体の的中率が下がる");
+    expect(text).toContain("据え置きが妥当");
+    expect(text).not.toContain("上げる余地あり");
+    store.close();
+  });
+
+  it("同じトークンの段階通知を、良かった／止めた一覧で 1 件にまとめる", () => {
+    const store = new Store(":memory:");
+    const base = NOW - 10 * H;
+    // 同じトークン $DUP に 3 段階の通知（同じ token_address）
+    for (let i = 0; i < 3; i++) {
+      seed(store, { symbol: "DUP", trigger: "new", kind: "new_launch", ts: base + i * M, path: [[0, 1], [60, 3], [240, 3.5]] });
+    }
+    seed(store, { symbol: "ONE", trigger: "new", kind: "new_launch", ts: base + 10 * M, path: [[0, 1], [60, 1.5], [240, 1.6]] });
+    computeOutcomes(store, cfg, NOW);
+    const { text } = buildDailyReport(store, cfg, NOW);
+    const good = text.split("良かったコール")[1]!.split("\n\n")[0]!;
+    expect((good.match(/\$DUP/g) ?? []).length).toBe(1);
+    expect(good).toContain("$ONE");
+    store.close();
+  });
+
+  it("種別の成績は平均ではなく中央値（1 件の異常値に引きずられない）", () => {
+    const store = new Store(":memory:");
+    const base = NOW - 10 * H;
+    seed(store, { symbol: "X1", trigger: "reignite", ts: base, path: [[0, 1], [60, 400], [240, 400]] }); // +39900%
+    seed(store, { symbol: "X2", trigger: "reignite", ts: base + M, path: [[0, 1], [60, 1.1], [240, 1.05]] });
+    seed(store, { symbol: "X3", trigger: "reignite", ts: base + 2 * M, path: [[0, 1], [60, 1.2], [240, 1.1]] });
+    computeOutcomes(store, cfg, NOW);
+    const { text } = buildDailyReport(store, cfg, NOW);
+    const line = text.split("\n").find((l) => l.includes("♻️ 再点火") && l.includes("件"))!;
+    expect(line).toContain("中央値: 最大 +20");
+    expect(line).not.toContain("+13");
+    store.close();
+  });
+
+  it("傾向の分析は通知したものだけで行う（止めたものを混ぜると、フィルタの結果を原因と取り違える）", () => {
+    const store = new Store(":memory:");
+    const base = NOW - 10 * H;
+    // 通知: 1h 未満の新規 4 件、全勝
+    for (let i = 0; i < 4; i++) {
+      const { id } = seed(store, { symbol: `Y${i}`, trigger: "new", kind: "new_launch", ts: base + i * M, path: [[0, 1], [60, 1.5], [240, 1.6]] });
+      void id;
+    }
+    // 止めた: 1h 未満 6 件、全敗（instant_volume で止めた側はローンチ直後に偏る）
+    for (let i = 0; i < 6; i++) {
+      seed(store, { symbol: `Z${i}`, trigger: "new", kind: "new_launch", suppressed: 1, score: 70, ts: base + (10 + i) * M, path: [[0, 1], [60, 0.5], [240, 0.3]] });
+    }
+    // age_hours は seed で 40h 固定なので、通知側だけ 0.5h に書き換える
+    const db = (store as unknown as { db: { prepare: (q: string) => { run: (...a: unknown[]) => void } } }).db;
+    db.prepare("UPDATE alerts SET age_hours = 0.5").run();
+    computeOutcomes(store, cfg, NOW);
+    const { text } = buildDailyReport(store, makeConfig({ REPORT_MIN_SAMPLES: "3" }), NOW);
+    // 混ぜていたら「1h未満 40%」で絞る候補が出る。通知だけなら 100% なので出ない
+    expect(text).not.toContain("1h未満」の的中 40%");
+    expect(text).not.toContain("絞る方向で見直す候補: NEW_MAX_AGE_HOURS");
+    store.close();
+  });
+
+  it("♻️ 再点火が一度も鳴っていなければ、それを明記する", () => {
+    const store = new Store(":memory:");
+    seed(store, { symbol: "A", trigger: "new", kind: "new_launch", ts: NOW - 10 * H, path: [[0, 1], [60, 1.5], [240, 1.6]] });
+    computeOutcomes(store, cfg, NOW);
+    const { text } = buildDailyReport(store, cfg, NOW);
+    expect(text).toContain("♻️ 再点火");
+    expect(text).toContain("0件");
+    expect(text).toContain("/ranges");
     store.close();
   });
 

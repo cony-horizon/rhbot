@@ -97,6 +97,7 @@ export interface Config {
 
   /** 結果追跡: 何 % 上がれば「的中」か / その猶予 / 何 % 下がれば「失敗」か */
   outcomeHitPct: number;
+  outcomeMinLiquidityUsd: number;
   outcomeHitWindowHours: number;
   outcomeBustPct: number;
   /** 日次レポート */
@@ -296,6 +297,8 @@ export function buildConfig(env: Env, strict = true): Config {
     txnSkewShow: num(env, "TXN_SKEW_SHOW", 0.65),
 
     outcomeHitPct: num(env, "OUTCOME_HIT_PCT", 30),
+    // 結果判定で「売れる価格」として数える流動性の下限。枯れたプールの張り付き価格を利益に数えない
+    outcomeMinLiquidityUsd: num(env, "OUTCOME_MIN_LIQUIDITY_USD", 5_000),
     outcomeHitWindowHours: num(env, "OUTCOME_HIT_WINDOW_HOURS", 4),
     outcomeBustPct: num(env, "OUTCOME_BUST_PCT", 50),
     reportEnabled: bool(env, "REPORT_ENABLED", true),

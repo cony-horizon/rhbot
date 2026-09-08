@@ -38,8 +38,9 @@ export function computeOutcomes(store: Store, cfg: Config, now: number): number 
       bust: null,
     };
 
+    const minLiq = cfg.outcomeMinLiquidityUsd;
     const gainAt = (offset: number, before: number, after: number): number | null => {
-      const price = store.priceNear(a.pair_address, a.ts + offset, before, after);
+      const price = store.priceNear(a.pair_address, a.ts + offset, before, after, minLiq);
       return price === null ? null : (price / base - 1) * 100;
     };
 
@@ -51,17 +52,20 @@ export function computeOutcomes(store: Store, cfg: Config, now: number): number 
 
     // 24h までの最高・最安を毎回引き直す（地平が伸びるほど値が更新されうる）
     const horizon = Math.min(now, a.ts + 24 * HOUR_MS);
-    const ext = store.priceExtremesBetween(a.pair_address, a.ts, horizon);
+    const ext = store.priceExtremesBetween(a.pair_address, a.ts, horizon, minLiq);
     if (ext) {
-      o.max_gain_pct = (ext.max / base - 1) * 100;
-      o.max_gain_at = ext.maxTs;
-      o.max_dd_pct = (ext.min / base - 1) * 100;
+      if (ext.max !== null) {
+        o.max_gain_pct = (ext.max / base - 1) * 100;
+        o.max_gain_at = ext.maxTs;
+      }
+      // 入口からの下落幅なので 0 が上限。上がりっぱなしの銘柄で「DD +300%」と出ないように
+      o.max_dd_pct = Math.min(0, (ext.min / base - 1) * 100);
     }
 
     // 的中判定は猶予時間内の最高値で決める
     if (o.hit === null) {
-      const inWindow = store.priceExtremesBetween(a.pair_address, a.ts, Math.min(now, a.ts + hitWindow));
-      if (inWindow && (inWindow.max / base - 1) * 100 >= cfg.outcomeHitPct) {
+      const inWindow = store.priceExtremesBetween(a.pair_address, a.ts, Math.min(now, a.ts + hitWindow), minLiq);
+      if (inWindow && inWindow.max !== null && (inWindow.max / base - 1) * 100 >= cfg.outcomeHitPct) {
         o.hit = 1;
         o.bust = 0;
       } else if (elapsed >= hitWindow) {
@@ -125,6 +129,53 @@ function rate(hits: number, n: number): string {
 
 function avg(xs: number[]): number | null {
   return xs.length === 0 ? null : xs.reduce((a, b) => a + b, 0) / xs.length;
+}
+
+/**
+ * 平均ではなく中央値で見る。
+ * 1 件の +39741% が平均を +827% に引き上げ、残り 97 件の実態を隠してしまった。
+ */
+function median(xs: number[]): number | null {
+  if (xs.length === 0) return null;
+  const s = [...xs].sort((a, b) => a - b);
+  const mid = Math.floor(s.length / 2);
+  return s.length % 2 === 1 ? (s[mid] as number) : ((s[mid - 1] as number) + (s[mid] as number)) / 2;
+}
+
+/** 同じトークンの通知（段階 1/3, 2/3, 3/3 や複数プール）を 1 件にまとめる。先頭＝順位の高いほうを残す */
+function uniqueByToken<T extends { token_address: string }>(list: T[]): T[] {
+  const seen = new Set<string>();
+  return list.filter((j) => {
+    const k = j.token_address.toLowerCase();
+    if (seen.has(k)) return false;
+    seen.add(k);
+    return true;
+  });
+}
+
+/**
+ * しきい値を上げたら何が起きるかを、勝ちだけでなく負けも含めて数える。
+ * 「止めた中に勝ちがある」だけでは上げる根拠にならない。
+ * 一緒に通る負けのほうが多ければ、全体の的中率は下がる。
+ */
+export function thresholdTradeoff(
+  blocked: Judged[],
+  sentHitRate: number | null,
+  current: number,
+): { threshold: number; admitted: number; hits: number; rate: number; dilutes: boolean }[] {
+  const out: { threshold: number; admitted: number; hits: number; rate: number; dilutes: boolean }[] = [];
+  let prevAdmitted = 0;
+  for (const t of [current + 10, current + 20, current + 30]) {
+    if (t > 100) break;
+    const admitted = blocked.filter((j) => j.scam_score < t);
+    // 前の段と同じ集合なら根拠が増えていない。並べると「80 まで上げられる」と読めてしまう
+    if (admitted.length === 0 || admitted.length === prevAdmitted) continue;
+    prevAdmitted = admitted.length;
+    const hits = admitted.filter((j) => j.hit === 1).length;
+    const rate = hits / admitted.length;
+    out.push({ threshold: t, admitted: admitted.length, hits, rate, dilutes: sentHitRate !== null && rate < sentHitRate });
+  }
+  return out;
 }
 
 /**
@@ -291,13 +342,18 @@ export function buildDailyReport(store: Store, cfg: Config, now: number): { text
   }
   for (const [k, list] of [...byTrigger.entries()].sort((a, b) => b[1].length - a[1].length)) {
     const h = list.filter((a) => a.hit === 1).length;
-    const mg = avg(list.map((a) => a.max_gain_pct ?? 0));
-    const dd = avg(list.map((a) => a.max_dd_pct ?? 0));
+    const mg = median(list.map((a) => a.max_gain_pct ?? 0));
+    const p4 = median(list.filter((a) => a.p4h !== null && a.p4h !== undefined).map((a) => a.p4h as number));
+    const dd = median(list.map((a) => a.max_dd_pct ?? 0));
     lines.push(
-      `${(TRIGGER_LABEL[k] ?? k).padEnd(10)} ${String(list.length).padStart(2)}件  的中 ${rate(h, list.length).padStart(4)}  平均最大 ${fmtPct(mg)}  平均DD ${fmtPct(dd)}`,
+      `${(TRIGGER_LABEL[k] ?? k).padEnd(10)} ${String(list.length).padStart(2)}件  的中 ${rate(h, list.length).padStart(4)}  中央値: 最大 ${fmtPct(mg)} / 4h後 ${fmtPct(p4)} / DD ${fmtPct(dd)}`,
     );
   }
-  lines.push("", `合計 的中率 <b>${rate(hits, sent.length)}</b>（${hits}/${sent.length}）`);
+  // 主軸の再点火が一度も鳴っていないなら、それ自体が報告すべき事実
+  if (cfg.reigniteEnabled && !byTrigger.has("reignite")) {
+    lines.push(`${TRIGGER_LABEL.reignite!.padEnd(10)}  0件  — 待機中の銘柄は /ranges で確認`);
+  }
+  lines.push("", `合計 的中率 <b>${rate(hits, sent.length)}</b>（${hits}/${sent.length}）`, `（最大＝24h 内の最高値。4h後＝通知から 4 時間後にただ持っていた場合）`);
 
   // 前日比
   const yesterday = store.getDailyReport(jst(now - 24 * HOUR_MS).date);
@@ -306,11 +362,13 @@ export function buildDailyReport(store: Store, cfg: Config, now: number): { text
   }
 
   // 良かった / 悪かった
-  const ranked = [...sent].filter((a) => a.max_gain_pct !== null && a.max_gain_pct !== undefined).sort((a, b) => (b.max_gain_pct ?? 0) - (a.max_gain_pct ?? 0));
+  const ranked = uniqueByToken(
+    [...sent].filter((a) => a.max_gain_pct !== null && a.max_gain_pct !== undefined).sort((a, b) => (b.max_gain_pct ?? 0) - (a.max_gain_pct ?? 0)),
+  );
   if (ranked.length > 0) {
     lines.push("", "<b>🏆 良かったコール</b>");
     for (const j of ranked.slice(0, 3)) lines.push(`・${describeCall(j)}`);
-    const worst = [...ranked].reverse().filter((j) => (j.p4h ?? j.max_gain_pct ?? 0) < 0).slice(0, 3);
+    const worst = uniqueByToken([...sent].sort((a, b) => (a.p4h ?? a.max_gain_pct ?? 0) - (b.p4h ?? b.max_gain_pct ?? 0))).filter((j) => (j.p4h ?? j.max_gain_pct ?? 0) < 0).slice(0, 3);
     if (worst.length > 0) {
       lines.push("", "<b>💀 悪かったコール</b>");
       for (const j of worst) lines.push(`・${describeCall(j)}`);
@@ -318,18 +376,33 @@ export function buildDailyReport(store: Store, cfg: Config, now: number): { text
   }
 
   // 止めた中の逸材（フィルタが厳しすぎる証拠）
-  const missed = blocked.filter((a) => a.hit === 1).sort((a, b) => (b.max_gain_pct ?? 0) - (a.max_gain_pct ?? 0));
+  const missed = uniqueByToken(blocked.filter((a) => a.hit === 1).sort((a, b) => (b.max_gain_pct ?? 0) - (a.max_gain_pct ?? 0)));
   if (missed.length > 0) {
-    lines.push("", `<b>🚫 止めたが伸びた銘柄</b>（${missed.length}/${blocked.length} 件）`);
+    const missedRaw = blocked.filter((a) => a.hit === 1).length;
+    lines.push("", `<b>🚫 止めたが伸びた銘柄</b>（${missedRaw}/${blocked.length} 件）`);
     for (const j of missed.slice(0, 3)) lines.push(`・${describeCall(j)} ｜ リスク ${j.scam_score}`);
-    const minScore = Math.min(...missed.map((j) => j.scam_score));
-    lines.push(`→ SCAM_SCORE_THRESHOLD を ${Math.min(100, minScore + 5)} 前後まで上げると拾えた可能性`);
+    // 上げたら勝ちも負けも一緒に通る。その両方を見せる
+    const trade = thresholdTradeoff(blocked, stats.hitRate, cfg.scamScoreThreshold);
+    if (trade.length > 0) {
+      lines.push(`しきい値を上げた場合（現在 ${cfg.scamScoreThreshold}、通知の的中率 ${rate(hits, sent.length)}）:`);
+      for (const t of trade) {
+        lines.push(`　${t.threshold} → +${t.admitted}件 通る、うち的中 ${t.hits}件（${Math.round(t.rate * 100)}%）${t.dilutes ? " ← 全体の的中率が下がる" : " ← 上げても質は落ちない"}`);
+      }
+      const good = trade.filter((t) => !t.dilutes);
+      lines.push(
+        good.length > 0
+          ? `→ SCAM_SCORE_THRESHOLD=${good[good.length - 1]!.threshold} まで上げる余地あり`
+          : `→ 止めた側の的中率が通知より低いので、しきい値は据え置きが妥当`,
+      );
+    }
   } else if (blocked.length > 0) {
     lines.push("", `🚫 止めた ${blocked.length} 件はいずれも伸びませんでした（フィルタは妥当）`);
   }
 
-  // 傾向と改善案
-  const ins = insights([...sent, ...blocked], cfg);
+  // 傾向と改善案。通知したものだけで見る。
+  // 止めたものを混ぜると、フィルタが「ローンチ 1h 未満」を狙って止めている以上、
+  // 「1h 未満は的中が低い」という結論が自動的に出てしまう（フィルタの結果を原因と取り違える）
+  const ins = insights(sent, cfg);
   if (ins.length > 0) {
     lines.push("", "<b>📈 傾向と改善案</b>");
     for (const i of ins) lines.push(`・${escapeHtml(i.text)}`);

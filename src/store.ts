@@ -755,29 +755,44 @@ export class Store {
   }
 
   /** 指定時刻に最も近いスナップショットの価格（許容範囲内に無ければ null） */
-  priceNear(pairAddress: string, ts: number, beforeMs: number, afterMs: number): number | null {
+  /**
+   * @param minLiquidity この額未満の流動性しか無い時点の価格は無視する。
+   *   プールが枯れた銘柄は DexScreener が最後の約定価格を返し続けるので、
+   *   放っておくと「+39741% で 4 時間保った」ように見える。売れない価格は価格ではない。
+   */
+  priceNear(pairAddress: string, ts: number, beforeMs: number, afterMs: number, minLiquidity = 0): number | null {
     const row = this.db
       .prepare(
         `SELECT price_usd FROM snapshots
-         WHERE pair_address = ? AND ts BETWEEN ? AND ? AND price_usd IS NOT NULL AND price_usd > 0
+         WHERE pair_address = ? AND ts BETWEEN ? AND ? AND price_usd IS NOT NULL AND price_usd > 0 AND liquidity_usd >= ?
          ORDER BY ABS(ts - ?) ASC LIMIT 1`,
       )
-      .get(pairAddress.toLowerCase(), ts - beforeMs, ts + afterMs, ts) as { price_usd: number } | undefined;
+      .get(pairAddress.toLowerCase(), ts - beforeMs, ts + afterMs, minLiquidity, ts) as { price_usd: number } | undefined;
     return row?.price_usd ?? null;
   }
 
-  /** 区間内の最高値・最安値と、最高値をつけた時刻 */
-  priceExtremesBetween(pairAddress: string, fromTs: number, toTs: number): { max: number; min: number; maxTs: number } | null {
+  /**
+   * 区間内の最高値・最安値と、最高値をつけた時刻。
+   *
+   * 最高値だけ流動性で絞る。利益は売れて初めて実現するが、損失は流動性が抜かれた時点で確定するので、
+   * 最安値まで絞るとラグを「無かったこと」にしてしまう。
+   */
+  priceExtremesBetween(pairAddress: string, fromTs: number, toTs: number, minLiquidity = 0): { max: number | null; min: number; maxTs: number | null } | null {
     const row = this.db
       .prepare(
-        `SELECT MAX(price_usd) AS mx, MIN(price_usd) AS mn FROM snapshots
-         WHERE pair_address = ? AND ts > ? AND ts <= ? AND price_usd IS NOT NULL AND price_usd > 0`,
+        `SELECT
+           (SELECT MAX(price_usd) FROM snapshots WHERE pair_address = ? AND ts > ? AND ts <= ? AND price_usd > 0 AND liquidity_usd >= ?) AS mx,
+           (SELECT MIN(price_usd) FROM snapshots WHERE pair_address = ? AND ts > ? AND ts <= ? AND price_usd > 0) AS mn`,
       )
-      .get(pairAddress.toLowerCase(), fromTs, toTs) as { mx: number | null; mn: number | null } | undefined;
-    if (!row || row.mx === null || row.mn === null) return null;
+      .get(pairAddress.toLowerCase(), fromTs, toTs, minLiquidity, pairAddress.toLowerCase(), fromTs, toTs) as
+      | { mx: number | null; mn: number | null }
+      | undefined;
+    // 売れる価格が一つも無くても（流動性が抜かれた直後など）最安値は返す。損失はそこで確定している
+    if (!row || row.mn === null) return null;
+    if (row.mx === null) return { max: null, min: row.mn, maxTs: null };
     const at = this.db
-      .prepare("SELECT ts FROM snapshots WHERE pair_address = ? AND ts > ? AND ts <= ? AND price_usd = ? ORDER BY ts ASC LIMIT 1")
-      .get(pairAddress.toLowerCase(), fromTs, toTs, row.mx) as { ts: number } | undefined;
+      .prepare("SELECT ts FROM snapshots WHERE pair_address = ? AND ts > ? AND ts <= ? AND price_usd = ? AND liquidity_usd >= ? ORDER BY ts ASC LIMIT 1")
+      .get(pairAddress.toLowerCase(), fromTs, toTs, row.mx, minLiquidity) as { ts: number } | undefined;
     return { max: row.mx, min: row.mn, maxTs: at?.ts ?? toTs };
   }
 
