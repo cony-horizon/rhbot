@@ -53,6 +53,8 @@ export interface RangeDiagnosis {
   /** 一覧の母集団に入っているか（門を超えるか手動） */
   inCandidates: boolean;
   currentMc: number | null;
+  /** いまの時価総額が RANGE_MIN_MC_USD 以上か（死んだ銘柄の除外） */
+  mcOk: boolean;
   cooledRatio: number | null;
   cooled: boolean;
   range: RangeInfo | null;
@@ -352,6 +354,8 @@ export class Engine {
       if (!range) continue;
       const currentMc = this.store.latestMc(row.pair_address);
       if (currentMc === null || currentMc <= 0) continue;
+      // 死んだ銘柄の平坦な線は帯ではない。detectRevival の再点火も同じ下限を読む
+      if (currentMc < this.cfg.rangeMinMcUsd) continue;
 
       // detectRevival と同じ条件。ここだけ緩めると「一覧には出るのに鳴らない」が起きる
       const cooledRatio = row.peak_mc > 0 ? currentMc / row.peak_mc : null;
@@ -644,6 +648,7 @@ export class Engine {
     const peakOk = row.peak_mc >= this.cfg.reigniteMinPeakMcUsd;
     const inCandidates = peakOk || row.manual === 1;
     const currentMc = this.store.latestMc(row.pair_address);
+    const mcOk = currentMc !== null && currentMc >= this.cfg.rangeMinMcUsd;
     const cooledRatio = currentMc !== null && row.peak_mc > 0 ? currentMc / row.peak_mc : null;
     const cooled = cooledRatio !== null && cooledRatio <= this.cfg.reigniteCooledRatio;
 
@@ -672,13 +677,14 @@ export class Engine {
       peakOk,
       inCandidates,
       currentMc,
+      mcOk,
       cooledRatio,
       cooled,
       range,
       windows,
       triggerMc,
       toBreakoutPct: triggerMc !== null && currentMc !== null && currentMc > 0 ? (triggerMc / currentMc - 1) * 100 : null,
-      primed: inCandidates && peakOk && cooled && range !== null,
+      primed: inCandidates && peakOk && mcOk && cooled && range !== null,
     };
   }
 

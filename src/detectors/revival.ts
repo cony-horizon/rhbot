@@ -55,6 +55,9 @@ export function detectRevival(ctx: DetectorContext, cfg: Config): Detection | nu
   const cooledRatio = peakMc > 0 && currentMc > 0 ? currentMc / peakMc : null;
   const hasPedigree = cfg.reigniteEnabled && peakMc >= cfg.reigniteMinPeakMcUsd;
   const cooled = cooledRatio !== null && cooledRatio <= cfg.reigniteCooledRatio;
+  // いまの時価総額が小さすぎる銘柄は再点火の対象にしない（/ranges と同じ下限）。
+  // 死んだ銘柄が $8K → $8.5K と動いたのは「レンジ上抜け」ではない。動きがあれば急変レーンが拾う
+  const alive = currentMc >= cfg.rangeMinMcUsd;
 
   // 成立したヨコヨコの帯を、どれだけ上抜けたか。
   // 「窓内の最大値」ではなく「帯として成立しているか」を確かめてから使うので、
@@ -65,7 +68,7 @@ export function detectRevival(ctx: DetectorContext, cfg: Config): Detection | nu
   // 成立経路を判定する。確度の高い順に見る
   const m5 = m.priceChangeM5;
   let trigger: "reignite" | "dormant" | "breakout" | "fast" | null = null;
-  if (hasPedigree && cooled && mcBreakoutPct !== null && mcBreakoutPct >= cfg.reigniteBreakoutPct) {
+  if (hasPedigree && cooled && alive && mcBreakoutPct !== null && mcBreakoutPct >= cfg.reigniteBreakoutPct) {
     trigger = "reignite";
   } else if (ratio >= cfg.revivalVolSpikeRatio && Number.isFinite(rise) && rise >= cfg.revivalPriceChangePct) {
     trigger = "dormant";

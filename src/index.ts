@@ -213,6 +213,9 @@ async function main(): Promise<void> {
                 ? `いま ${fmtUsd(d.currentMc)}${d.cooledRatio !== null ? ` = 全盛期の ${Math.round(d.cooledRatio * 100)}%  ${d.cooled ? "✅ 冷えている" : `❌ ${Math.round(cfg.reigniteCooledRatio * 100)}% より高い → まだ冷えていない`}` : ""}`
                 : "いま: 時価総額の観測なし",
             ];
+            if (d.currentMc !== null && !d.mcOk) {
+              lines.push(`❌ いまの時価総額が ${fmtUsd(cfg.rangeMinMcUsd)} 未満 → 死んだ銘柄として監視から外す（動きがあれば急変レーンが拾う）`);
+            }
             if (d.range) {
               lines.push(`帯 ${fmtUsd(d.range.low)}〜${fmtUsd(d.range.high)}（幅 ${d.range.widthPct.toFixed(0)}% / ${fmtAge(d.range.durationMs)} / ${d.range.samples} 点）✅`);
               if (d.toBreakoutPct !== null) {
@@ -225,6 +228,7 @@ async function main(): Promise<void> {
             lines.push("");
             if (d.primed) lines.push("✅ 監視に入っていて、上抜けを待っている状態です");
             else if (!d.inCandidates) lines.push(`❌ 監視に入っていません。全盛期が門に届いていないため。門を下げるなら .env の REIGNITE_MIN_PEAK_MC_USD`);
+            else if (!d.mcOk) lines.push(`❌ 監視から外しています。いまの時価総額が小さすぎるため（RANGE_MIN_MC_USD）`);
             else if (!d.cooled) lines.push("⏸ 母集団には入っているが、まだ冷えていないので再点火の対象外");
             else lines.push("⏸ 母集団には入っているが、帯が成立していない。上の窓ごとの理由を参照（RANGE_MIN_HOURS / RANGE_MIN_SAMPLES / RANGE_MAX_WIDTH_PCT）");
             return lines.join("\n");

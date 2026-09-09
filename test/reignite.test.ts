@@ -137,3 +137,27 @@ describe("全盛期の記録", () => {
     store.close();
   });
 });
+
+describe("再点火 — 死んだ銘柄は対象外、ただし急変レーンは残る", () => {
+  it("全盛期 $600K・いま $8K の『上抜け』は再点火にしない", () => {
+    // 帯 $7K〜$8K、いま $8.6K（+7.5%）。数字の上では上抜けだが、死んだ銘柄のノイズ
+    const c = ctx(8_600, 8_000, 600_000);
+    c.mcRange = toRange({ high: 8_000, low: 7_000, samples: 40, firstTs: NOW - 30 * H, lastTs: NOW }, cfg);
+    const d = detectRevival(c, cfg);
+    expect(d?.display.trigger).not.toBe("reignite");
+  });
+
+  it("同じ銘柄でも 5 分足の急変なら急変レーンが拾う", () => {
+    const c = ctx(8_600, 8_000, 600_000);
+    c.mcRange = toRange({ high: 8_000, low: 7_000, samples: 40, firstTs: NOW - 30 * H, lastTs: NOW }, cfg);
+    c.pair.priceChange.m5 = 45;
+    const d = detectRevival(c, cfg)!;
+    expect(d).not.toBeNull();
+    expect(d.display.trigger).toBe("fast");
+  });
+
+  it("下限以上なら従来どおり再点火", () => {
+    const c = ctx(1_600_000, 1_500_000, 5_000_000);
+    expect(detectRevival(c, cfg)?.display.trigger).toBe("reignite");
+  });
+});

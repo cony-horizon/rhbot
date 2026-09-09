@@ -736,3 +736,47 @@ describe("Engine — $MOO: 全盛期 $600K・7.5 時間の帯を監視に入れ�
     expect(engine.rangeDiagnosis("0xnobody", NOW)).toBeNull();
   });
 });
+
+describe("Engine — 死んだ銘柄をヨコヨコ監視から外す（RANGE_MIN_MC_USD）", () => {
+  /** 全盛期 $600K → $8K で平坦。全盛期の門は通るが、いまは死んでいる */
+  function seedDead(store: Store, nowMc: number, symbol = "DEAD") {
+    const addr = `0xpair_${symbol.toLowerCase()}`;
+    const mk = (mc: number) => {
+      const p = makePair({ address: addr, token: `0xtok_${symbol.toLowerCase()}`, symbol, ageHours: 40, price: mc / 1e9, liq: 6_000 });
+      p.marketCap = mc;
+      p.fdv = mc;
+      return p;
+    };
+    store.upsertPair(mk(600_000), "test", NOW - 30 * H);
+    for (let i = 0; i < 40; i++) store.insertSnapshot(mk(i % 2 === 0 ? nowMc * 0.95 : nowMc * 1.05), NOW - (10 - i * 0.24) * H);
+    store.insertSnapshot(mk(nowMc), NOW - 60_000);
+    return addr;
+  }
+
+  it("いまの時価総額が下限未満なら一覧に出ない（利用者が見た $10K 未満の行）", () => {
+    const { store, engine, cfg } = setup();
+    seedDead(store, 8_000, "DEAD");
+    seedDead(store, 60_000, "ALIVE");
+    expect(cfg.rangeMinMcUsd).toBeGreaterThan(10_000);
+    const list = engine.rangeWatchlist(NOW);
+    expect(list.map((w) => w.row.base_symbol)).toEqual(["ALIVE"]);
+  });
+
+  it("診断はその理由を言う", () => {
+    const { store, engine } = setup();
+    seedDead(store, 8_000);
+    const d = engine.rangeDiagnosis("0xtok_dead", NOW)!;
+    expect(d.peakOk).toBe(true);
+    expect(d.inCandidates).toBe(true);
+    expect(d.mcOk).toBe(false);
+    expect(d.primed).toBe(false);
+  });
+
+  it("下限は設定で動かせる", () => {
+    const cfgLoose = makeConfig({ DISCOVERY_SEARCH_QUERIES: "x", DISCOVERY_USE_PROFILES: "false", RANGE_MIN_MC_USD: "5000" });
+    const store = new Store(":memory:");
+    const engine = new Engine(cfgLoose, store, {} as unknown as DexScreenerClient, { broadcast: async () => {} }, null, () => NOW);
+    seedDead(store, 8_000);
+    expect(engine.rangeWatchlist(NOW)).toHaveLength(1);
+  });
+});

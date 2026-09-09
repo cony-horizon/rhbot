@@ -69,6 +69,7 @@ export interface Config {
   rangeMinHours: number;
   rangeMaxWidthPct: number;
   rangeMinSamples: number;
+  rangeMinMcUsd: number;
   priorityPeakMcUsd: number;
   priorityPollIntervalSec: number;
   revivalCooldownMin: number;
@@ -276,6 +277,10 @@ export function buildConfig(env: Env, strict = true): Config {
     rangeMinHours: num(env, "RANGE_MIN_HOURS", 6),
     rangeMaxWidthPct: num(env, "RANGE_MAX_WIDTH_PCT", 150),
     rangeMinSamples: num(env, "RANGE_MIN_SAMPLES", 20),
+    // いまの時価総額がこれ未満の銘柄はヨコヨコ監視から外す。
+    // 全盛期の門は「過去に大きかったか」しか見ないので、$8K まで死んだ銘柄の平坦な線も帯に見えてしまう。
+    // そういう銘柄に何かあれば急変レーンが拾う
+    rangeMinMcUsd: num(env, "RANGE_MIN_MC_USD", 30_000),
     priorityPeakMcUsd: num(env, "PRIORITY_PEAK_MC_USD", 300_000),
     priorityPollIntervalSec: num(env, "PRIORITY_POLL_INTERVAL_SEC", 45),
     revivalCooldownMin: num(env, "REVIVAL_COOLDOWN_MIN", 180),
