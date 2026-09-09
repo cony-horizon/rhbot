@@ -9,9 +9,9 @@ import { baseMetrics, HOUR_MS, MINUTE_MS } from "./detectors/common.js";
 import { formatAlert, type AlertViewOptions } from "./format.js";
 import { log } from "./logger.js";
 import { PoolScanner, RpcClient } from "./rpc.js";
-import type { PairRow, Store, Tier } from "./store.js";
+import type { AlertRow, EarlyBuyer, PairRow, Store, Tier } from "./store.js";
 import { buildDailyReport, computeOutcomes, jst } from "./outcomes.js";
-import { SwapHarvester } from "./smartwallets.js";
+import { SwapHarvester, type HarvestResult } from "./smartwallets.js";
 
 /** discovery が何回続けて空振りしたら利用者に知らせるか */
 const HEALTH_EMPTY_THRESHOLD = 5;
@@ -34,6 +34,10 @@ export interface RangeWatch {
   /** 全盛期 MC と冷え込みの条件を満たし、あとは上抜けを待つだけか */
   primed: boolean;
 }
+
+export type HarvestTokenResult =
+  | { ok: false; reason: string }
+  | { ok: true; pair: PairRow; alert: AlertRow; hours: number; result: HarvestResult; tagged: number; buyers: EarlyBuyer[] };
 
 export interface AlertSink {
   broadcast(html: string): Promise<void>;
@@ -551,6 +555,50 @@ export class Engine {
       }
     }
     return done;
+  }
+
+  /**
+   * 指定トークンの急騰前の買い手を、いま集める（/harvest）。
+   *
+   * 自動収穫は「的中が確定した復活通知」を待つが、利用者が「これは本物だった」と
+   * 分かった時点で待つ理由はない。窓も広めに取れるようにする。
+   * フェニックスの仕込みは静穏期に散らばるので、6 時間では取りこぼす。
+   */
+  async harvestToken(address: string, windowHours?: number): Promise<HarvestTokenResult> {
+    if (!this.harvester) return { ok: false, reason: "RPC_URL が設定されていないため、チェーンの取引を読めません（.env を確認）" };
+
+    // ペアアドレスでもトークンアドレスでも受ける。未知なら DexScreener から取り込む
+    let pairs = this.store.listPairsByToken(address);
+    if (pairs.length === 0) {
+      const one = this.store.getPair(address);
+      if (one) pairs = [one];
+    }
+    if (pairs.length === 0) {
+      await this.watch(address);
+      pairs = this.store.listPairsByToken(address);
+      if (pairs.length === 0) {
+        const one = this.store.getPair(address);
+        if (one) pairs = [one];
+      }
+    }
+    const pair = pairs.sort((a, b) => b.last_liquidity_usd - a.last_liquidity_usd)[0];
+    if (!pair) return { ok: false, reason: `DexScreener に ${address} のペアが見つかりませんでした` };
+
+    const alert = this.store.anchorAlertForToken(pair.base_address);
+    if (!alert) {
+      return {
+        ok: false,
+        reason: `$${pair.base_symbol} には通知の記録が無く、「急騰前」の時点を決められません。通知が出た銘柄で使ってください`,
+      };
+    }
+
+    const hours = windowHours ?? this.cfg.smartHarvestWindowHours;
+    const now = this.now();
+    const result = await this.harvester.harvest(alert, pair, hours);
+    this.store.markHarvest(alert.id, now, result.status, result.swaps, result.buyers, `manual ${hours}h`);
+    const tagged = result.status === "ok" ? this.store.tagWalletsForToken(pair.base_address, pair.base_symbol) : 0;
+    const buyers = this.store.earlyBuyersForToken(pair.base_address, 15);
+    return { ok: true, pair, alert, hours, result, tagged, buyers };
   }
 
   /* ---------------- メンテナンス ---------------- */

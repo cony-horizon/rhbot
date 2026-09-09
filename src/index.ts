@@ -20,6 +20,7 @@ const COMMANDS = [
   { command: "outcomes", description: "直近の通知がその後どうなったか" },
   { command: "smart", description: "早期に入っていたウォレット台帳" },
   { command: "wallet", description: "ウォレットの買い履歴" },
+  { command: "harvest", description: "指定銘柄の急騰前の買い手を今すぐ集めて印を付ける" },
   { command: "why", description: "指定アドレスのリスクを採点する" },
   { command: "watch", description: "アドレスを手動で監視に追加" },
   { command: "unwatch", description: "監視から外す" },
@@ -185,7 +186,7 @@ async function main(): Promise<void> {
           }
           const smart = rows.filter((w) => w.hits >= cfg.smartMinHits);
           return (
-            `<b>早期に入っていたウォレット</b>（${cfg.smartMinHits} 銘柄以上で ⭐）\n` +
+            `<b>早期に入っていたウォレット</b>（${cfg.smartMinHits} 銘柄以上で ⭐ / 手動で印 🏷）\n` +
             rows.map((w) => formatWalletRow(w, cfg.smartMinHits)).join("\n") +
             `\n\n⭐ ${smart.length} 件 / 全 ${store.countWallets(1)} 件。詳細は /wallet &lt;アドレス&gt;`
           );
@@ -220,6 +221,34 @@ async function main(): Promise<void> {
             rows.map(formatRangeWatch).join("\n\n") +
             "\n\n🔔 = 条件到達 / 🟠 あと 5% / 🟡 あと 15% / ⚪ それ以上"
           );
+        }
+        case "harvest": {
+          const addr = args[0];
+          if (!addr || !/^0x[0-9a-fA-F]{40,64}$/.test(addr)) return "使い方: /harvest &lt;トークン or ペアアドレス&gt; [遡る時間 例: 24]";
+          const hours = Math.max(1, Math.min(48, Number(args[1]) || cfg.smartHarvestWindowHours));
+          const r = await engine.harvestToken(addr, hours);
+          if (!r.ok) return `❌ ${escapeHtml(r.reason)}`;
+          const { pair, alert, result, buyers, tagged } = r;
+          const when = new Date(alert.ts + 9 * 3_600_000).toISOString().slice(5, 16).replace("T", " ");
+          const head = [
+            `🏷 <b>$${escapeHtml(pair.base_symbol)}</b> の先回りウォレット`,
+            `基準: ${when} JST の通知（${escapeHtml(alert.trigger || alert.kind)}）から ${r.hours} 時間前まで`,
+            `取引 ${result.swaps} 件 → 買い手 ${result.buyers} 人 → 印を付けた ${tagged} 件`,
+          ];
+          if (result.status === "no_swaps") return head.join("\n") + "\n\nこの窓には買いがありませんでした。遡る時間を増やして試してください（例: /harvest " + escapeHtml(addr) + " 24）";
+          if (result.status === "too_many") return head.join("\n") + `\n\n取引が多すぎて打ち切りました（${result.note ?? ""}）。遡る時間を減らしてください`;
+          if (buyers.length === 0) return head.join("\n");
+          const lines = [...head, "", "<b>早く入った順</b>"];
+          for (const b of buyers) {
+            const short = `${b.wallet.slice(0, 6)}…${b.wallet.slice(-4)}`;
+            const lead = Math.round((alert.ts - b.first_ts) / 60_000);
+            const w = store.getWallet(b.wallet);
+            const star = w && w.hits >= cfg.smartMinHits ? "⭐" : "🏷";
+            lines.push(`${star} <code>${escapeHtml(b.wallet)}</code>\n　通知の ${lead} 分前に初回買い / ${b.buys} 回 / ${fmtUsd(b.quote_amount)} 相当${w && w.hits > 1 ? ` / 他 ${w.hits - 1} 銘柄でも早期` : ""}`);
+            void short;
+          }
+          lines.push("", `/smart で一覧、/wallet &lt;アドレス&gt; で履歴。他の勝ち銘柄でも早期に入っていれば ⭐ に昇格します`);
+          return lines.join("\n");
         }
         case "filtered": {
           const n = Math.min(20, Number(args[0]) || 10);

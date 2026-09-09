@@ -165,10 +165,13 @@ export class SwapHarvester {
     }
   }
 
-  /** 通知の前 N 時間に、そのプールで base を買ったウォレットを集めて記録する */
-  async harvest(alert: AlertRow, pair: PairRow): Promise<HarvestResult> {
+  /**
+   * 通知の前 N 時間に、そのプールで base を買ったウォレットを集めて記録する。
+   * @param windowHours 既定は設定値。フェニックスは静穏期に仕込まれるので、手動では広めに取れる
+   */
+  async harvest(alert: AlertRow, pair: PairRow, windowHours = this.cfg.smartHarvestWindowHours): Promise<HarvestResult> {
     const toTs = alert.ts;
-    const fromTs = toTs - this.cfg.smartHarvestWindowHours * HOUR_MS;
+    const fromTs = toTs - windowHours * HOUR_MS;
     const cache = new Map<number, number>();
     const fromBlock = await this.findBlockByTimestamp(fromTs, cache);
     const toBlock = await this.findBlockByTimestamp(toTs, cache);

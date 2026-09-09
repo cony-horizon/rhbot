@@ -136,7 +136,9 @@ describe("detectRevival", () => {
   });
 
   it("出来高・買い件数・流動性の下限", () => {
-    expect(detectRevival({ now: NOW, pair: makePair({ ...base, volH1: 5_000, volH24: 6_000 }), ageMs: 40 * H, lastAlert: null, lookbackMinPrice: null }, cfg)).toBeNull();
+    // 下限の絶対値ではなく「下限を割れば落ちる」ことを見る（下限は $PARLEY に合わせて動く）
+    const under = Math.floor(cfg.revivalMinVolH1Usd * 0.6);
+    expect(detectRevival({ now: NOW, pair: makePair({ ...base, volH1: under, volH24: under + 1_000 }), ageMs: 40 * H, lastAlert: null, lookbackMinPrice: null }, cfg)).toBeNull();
     expect(detectRevival({ now: NOW, pair: makePair({ ...base, buysH1: 2 }), ageMs: 40 * H, lastAlert: null, lookbackMinPrice: null }, cfg)).toBeNull();
     expect(detectRevival({ now: NOW, pair: makePair({ ...base, liq: 100 }), ageMs: 40 * H, lastAlert: null, lookbackMinPrice: null }, cfg)).toBeNull();
   });
@@ -259,5 +261,59 @@ describe("detectNewLaunch — 時価総額の下限", () => {
     expect(raised.newMinMcUsd).toBe(50_000_000);
     expect(raised.reigniteMinPeakMcUsd).toBe(base.reigniteMinPeakMcUsd);
     expect(raised.priorityPeakMcUsd).toBe(base.priorityPeakMcUsd);
+  });
+});
+
+/**
+ * 利用者が報告した実物: $PARLEY (0xcf3d41f9…) — フェニックスの型そのもの。
+ * ローンチ → 急落 → 26 時間静穏 → 立ち上がり。MC $50K・出来高 $10.7K/h の時点で 🔥急変 として拾い、そこから 15 倍。
+ * 通知本文の数字をそのまま固定する。
+ */
+describe("detectRevival — $PARLEY を取り逃がさない", () => {
+  const parleyCtx = (volH1 = 10_700) => {
+    // 「平常の 2.7 倍」になるように 24h を逆算（26h 経過なので実在時間 23h で割られる）
+    const prevAvg = volH1 / 2.7;
+    const p = makePair({
+      symbol: "PARLEY",
+      ageHours: 26.3,
+      price: 0.0000533,
+      volH1,
+      volH24: volH1 + prevAvg * 23,
+      liq: 15_000,
+      buysH1: 24,
+      sellsH1: 14,
+      changeH1: 80.2,
+      changeM5: 62.3,
+    });
+    p.marketCap = 50_000;
+    p.fdv = 50_000;
+    return {
+      now: NOW,
+      pair: p,
+      ageMs: 26.3 * H,
+      lastAlert: null as AlertRow | null,
+      lookbackMinPrice: 0.0000533 / 2.45, // 底値から +145%
+      baseLowPrice: 0.0000533 / 2.45,
+      rangeHighPrice: null,
+    };
+  };
+
+  it("5 分足の急変で拾える（🔥急変）", () => {
+    const d = detectRevival(parleyCtx(), cfg)!;
+    expect(d).not.toBeNull();
+    expect(d.display.trigger).toBe("fast");
+    expect(d.display.baseRisePct).toBeCloseTo(145, 0);
+  });
+
+  it("出来高の下限に対して余裕がある（旧下限 $10K では 7% しか無かった）", () => {
+    expect(10_700 / cfg.revivalMinVolH1Usd).toBeGreaterThan(1.5);
+    // 同じ型で出来高が 3 割少なくても落とさない
+    expect(detectRevival(parleyCtx(7_500), cfg)).not.toBeNull();
+  });
+
+  it("旧下限 $10K に戻すと、出来高が少し少ないだけで取り逃がす（下限を上げるときの警告）", () => {
+    const old = makeConfig({ REVIVAL_MIN_VOL_H1_USD: "10000" });
+    expect(detectRevival(parleyCtx(10_700), old)).not.toBeNull();
+    expect(detectRevival(parleyCtx(9_900), old)).toBeNull();
   });
 });

@@ -2,7 +2,9 @@ import { describe, expect, it } from "vitest";
 import { RpcClient, type RawLog } from "../src/rpc.js";
 import { SWAP_TOPICS, SwapHarvester, ZERO_ADDRESS, baseIsToken0, parseSwap } from "../src/smartwallets.js";
 import { Store } from "../src/store.js";
-import { NOW, makeConfig, makePair } from "./helpers.js";
+import { Engine } from "../src/engine.js";
+import type { DexScreenerClient } from "../src/dexscreener.js";
+import { H, NOW, makeConfig, makePair } from "./helpers.js";
 
 const H = 3_600_000;
 const pad = (hex: string) => hex.replace(/^0x/, "").padStart(64, "0");
@@ -266,5 +268,85 @@ describe("SwapHarvester", () => {
     expect(store.getWallet("0xe5")!.quote_volume).toBeCloseTo(1, 6);
     expect(calls).toContain("eth_getLogs");
     expect(calls).not.toContain("eth_call"); // ネイティブ ETH は decimals を問い合わせない
+  });
+});
+
+describe("Engine.harvestToken — /harvest で任意の銘柄の先回りを集める", () => {
+  const latest = 1_000_000;
+  const latestTs = Math.floor(NOW / 1000);
+  const blockAt = (secondsBeforeAlert: number) => latest - Math.round((2 * 3600 + secondsBeforeAlert) / 0.25);
+
+  function build(logs: RawLog[], fromByHash: Record<string, string>, withRpc = true) {
+    const cfg = makeConfig({ SMART_HARVEST_WINDOW_HOURS: "1", RPC_BLOCK_CHUNK: "5000", DISCOVERY_SEARCH_QUERIES: "x", DISCOVERY_USE_PROFILES: "false" });
+    const store = new Store(":memory:");
+    const pair = makePair({ address: POOL, token: BASE, symbol: "PARLEY", price: 0.0000533 });
+    pair.quoteToken.address = QUOTE;
+    store.upsertPair(pair, "test", NOW - 30 * H);
+    const alertTs = NOW - 2 * H;
+    const id = store.insertAlert({
+      kind: "revival", token_address: BASE, pair_address: POOL, ts: alertTs, level: 1, price_usd: 0.0000533, symbol: "PARLEY", summary: "",
+      scam_score: 0, scam_reasons: "", suppressed: 0, mc_usd: 50_000, trigger: "fast", vol_h1: 10_700, buys_h1: 24, sells_h1: 14, age_hours: 26,
+    });
+    const { rpc } = fakeRpc({ latest, latestTs, logs, fromByHash });
+    const engine = new Engine(cfg, store, {} as unknown as DexScreenerClient, { broadcast: async () => {} }, withRpc ? rpc : null, () => NOW);
+    return { store, engine, alertId: id, alertTs, cfg };
+  }
+
+  it("通知の前に買っていたウォレットを早い順に返し、🏷 の印を付ける", async () => {
+    const logs = [
+      swapLog(blockAt(3000), "0x0001", 2n * 10n ** 18n), // 50 分前 wallet A ← 最も早い
+      swapLog(blockAt(1200), "0x0002", 5n * 10n ** 17n), // 20 分前 wallet B
+      swapLog(blockAt(900), "0x0003", 1n * 10n ** 18n), // 15 分前 wallet A（2 回目）
+    ];
+    const { store, engine, alertId } = build(logs, { "0x0001": "0xA1", "0x0002": "0xB2", "0x0003": "0xA1" });
+    const r = await engine.harvestToken(BASE);
+    expect(r.ok).toBe(true);
+    if (!r.ok) return;
+    expect(r.result.status).toBe("ok");
+    expect(r.buyers.map((b) => b.wallet)).toEqual(["0xa1", "0xb2"]);
+    expect(r.buyers[0]!.buys).toBe(2);
+    expect(r.tagged).toBe(2);
+    expect(store.getWallet("0xa1")!.tag).toBe("PARLEY");
+    expect(store.getHarvest(alertId)!.note).toContain("manual");
+  });
+
+  it("窓を広げると、静穏期に仕込んだウォレットまで届く", async () => {
+    const logs = [
+      swapLog(blockAt(5 * 3600), "0x0011", 10n ** 18n), // 5 時間前 ← 1h 窓には入らない
+      swapLog(blockAt(600), "0x0012", 10n ** 18n), // 10 分前
+    ];
+    const { engine } = build(logs, { "0x0011": "0xEE", "0x0012": "0xFF" });
+    const narrow = await engine.harvestToken(BASE, 1);
+    expect(narrow.ok && narrow.buyers.map((b) => b.wallet)).toEqual(["0xff"]);
+    const wide = await engine.harvestToken(BASE, 6);
+    expect(wide.ok && wide.buyers.map((b) => b.wallet)).toEqual(["0xee", "0xff"]);
+  });
+
+  it("印は既存の hits を壊さず、別銘柄で当たれば ⭐ に昇格できる", async () => {
+    const { store, engine } = build([swapLog(blockAt(900), "0x0021", 10n ** 18n)], { "0x0021": "0xA1" });
+    await engine.harvestToken(BASE);
+    expect(store.getWallet("0xa1")!.hits).toBe(1);
+    expect(store.getWallet("0xa1")!.tag).toBe("PARLEY");
+    // 同じウォレットが別銘柄でも早期に入っていた記録を足す
+    store.recordWalletBuys([{ wallet: "0xa1", token_address: "0xother", pair_address: "0xotherpool", alert_id: 999, symbol: "OTHER", ts: NOW - H, block: 1, quote_amount: 1, tx_hash: "0xzz" }]);
+    const w = store.getWallet("0xa1")!;
+    expect(w.hits).toBe(2);
+    expect(w.tag).toBe("PARLEY"); // refreshWallet が tag を消していない
+  });
+
+  it("RPC 未設定なら理由を返す", async () => {
+    const { engine } = build([], {}, false);
+    const r = await engine.harvestToken(BASE);
+    expect(r.ok).toBe(false);
+    expect(!r.ok && r.reason).toContain("RPC_URL");
+  });
+
+  it("通知の記録が無い銘柄は「急騰前」を決められないと返す", async () => {
+    const { store, engine } = build([], {});
+    const other = makePair({ address: "0x3333333333333333333333333333333333333333", token: "0xdddddddddddddddddddddddddddddddddddddddd", symbol: "NOALERT" });
+    store.upsertPair(other, "test", NOW - H);
+    const r = await engine.harvestToken(other.baseToken.address);
+    expect(r.ok).toBe(false);
+    expect(!r.ok && r.reason).toContain("通知の記録が無く");
   });
 });

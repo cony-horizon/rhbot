@@ -495,9 +495,26 @@ describe("Store — 旧バージョンの DB を引き継いで起動する", ()
     db.prepare("INSERT INTO snapshots(pair_address, ts, price_usd, vol_h1) VALUES(?, ?, ?, ?)").run("0xold", NOW - 2 * H, 0.5, 1000);
     db.prepare("INSERT INTO alerts(kind, token_address, pair_address, ts, level, price_usd, symbol, summary) VALUES(?,?,?,?,?,?,?,?)")
       .run("revival", "0xoldtoken", "0xold", NOW - 3 * H, 1, 0.4, "OLD", "以前の通知");
+    // tag 列が無い頃の wallets 表（自動収穫が既に動いていた DB）
+    db.exec(`CREATE TABLE wallets (
+      address TEXT PRIMARY KEY, hits INTEGER NOT NULL DEFAULT 0, buys INTEGER NOT NULL DEFAULT 0,
+      quote_volume REAL NOT NULL DEFAULT 0, first_seen INTEGER NOT NULL, last_seen INTEGER NOT NULL)`);
+    db.prepare("INSERT INTO wallets(address, hits, buys, quote_volume, first_seen, last_seen) VALUES(?,?,?,?,?,?)").run("0xoldwallet", 1, 2, 0.5, NOW - 4 * H, NOW - 3 * H);
     db.close();
     return file;
   }
+
+  it("tag 列の無い wallets 表を持つ DB でも、印を付けられる", () => {
+    const store = new Store(legacyDb());
+    const w = store.getWallet("0xoldwallet")!;
+    expect(w.hits).toBe(1);
+    expect(w.tag).toBe("");
+    store.recordWalletBuys([{ wallet: "0xoldwallet", token_address: "0xoldtoken", pair_address: "0xold", alert_id: 1, symbol: "OLD", ts: NOW - 3 * H, block: 1, quote_amount: 1, tx_hash: "0xh1" }]);
+    expect(store.tagWalletsForToken("0xoldtoken", "OLD")).toBe(1);
+    expect(store.getWallet("0xoldwallet")!.tag).toBe("OLD");
+    expect(store.topWallets(5, 1)[0]!.tag).toBe("OLD");
+    store.close();
+  });
 
   it("列も索引も足りない DB を開いて起動できる（peak_mc への索引で落ちない）", () => {
     const file = legacyDb();

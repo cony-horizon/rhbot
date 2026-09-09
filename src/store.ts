@@ -105,6 +105,17 @@ export interface WalletRow {
   quote_volume: number;
   first_seen: number;
   last_seen: number;
+  /** 手動で印を付けた銘柄（/harvest）。空なら自動収穫のみ */
+  tag: string;
+}
+
+/** ある銘柄を急騰前に買っていたウォレットの要約（早い順） */
+export interface EarlyBuyer {
+  wallet: string;
+  first_block: number;
+  first_ts: number;
+  buys: number;
+  quote_amount: number;
 }
 
 export interface WalletBuyRow {
@@ -242,7 +253,8 @@ CREATE TABLE IF NOT EXISTS wallets (
   buys INTEGER NOT NULL DEFAULT 0,
   quote_volume REAL NOT NULL DEFAULT 0,
   first_seen INTEGER NOT NULL,
-  last_seen INTEGER NOT NULL
+  last_seen INTEGER NOT NULL,
+  tag TEXT NOT NULL DEFAULT ''
 );
 CREATE TABLE IF NOT EXISTS wallet_buys (
   id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -327,6 +339,11 @@ export class Store {
       (this.db.prepare("PRAGMA table_info(snapshots)").all() as unknown as { name: string }[]).map((c) => c.name),
     );
     if (!snapCols.has("market_cap")) this.db.exec("ALTER TABLE snapshots ADD COLUMN market_cap REAL NOT NULL DEFAULT 0");
+
+    const walletCols = new Set(
+      (this.db.prepare("PRAGMA table_info(wallets)").all() as unknown as { name: string }[]).map((c) => c.name),
+    );
+    if (!walletCols.has("tag")) this.db.exec("ALTER TABLE wallets ADD COLUMN tag TEXT NOT NULL DEFAULT ''");
   }
 
   close(): void {
@@ -905,6 +922,51 @@ export class Store {
     return this.db
       .prepare("SELECT * FROM wallets WHERE hits >= ? ORDER BY hits DESC, quote_volume DESC LIMIT ?")
       .all(minHits, limit) as unknown as WalletRow[];
+  }
+
+  /**
+   * その銘柄を買っていたウォレットに印を付ける（/harvest）。
+   * 自動収穫の hits とは別に残すので、1 銘柄だけでも一覧で見分けられる
+   */
+  tagWalletsForToken(tokenAddress: string, tag: string): number {
+    const res = this.db
+      .prepare(
+        `UPDATE wallets SET tag = CASE WHEN tag = '' THEN ? WHEN instr(tag, ?) > 0 THEN tag ELSE tag || ',' || ? END
+         WHERE address IN (SELECT DISTINCT wallet FROM wallet_buys WHERE token_address = ?)`,
+      )
+      .run(tag, tag, tag, tokenAddress.toLowerCase());
+    return Number(res.changes);
+  }
+
+  /** その銘柄を急騰前に買っていたウォレット。最初に買った順＝先回りした順 */
+  earlyBuyersForToken(tokenAddress: string, limit: number): EarlyBuyer[] {
+    return this.db
+      .prepare(
+        `SELECT wallet, MIN(block) AS first_block, MIN(ts) AS first_ts, COUNT(*) AS buys, COALESCE(SUM(quote_amount), 0) AS quote_amount
+         FROM wallet_buys WHERE token_address = ? GROUP BY wallet ORDER BY first_block ASC LIMIT ?`,
+      )
+      .all(tokenAddress.toLowerCase(), limit) as unknown as EarlyBuyer[];
+  }
+
+  /**
+   * 「急騰前」の基準にする通知。復活系を優先する。
+   * 新規ローンチの通知と 26 時間後の復活の通知が両方あるなら、先回りを見たいのは後者の前
+   */
+  anchorAlertForToken(tokenAddress: string): AlertRow | null {
+    const addr = tokenAddress.toLowerCase();
+    const revival = this.db
+      .prepare("SELECT * FROM alerts WHERE token_address = ? AND kind = 'revival' ORDER BY ts ASC LIMIT 1")
+      .get(addr) as AlertRow | undefined;
+    if (revival) return revival;
+    return (this.db.prepare("SELECT * FROM alerts WHERE token_address = ? ORDER BY ts ASC LIMIT 1").get(addr) as AlertRow | undefined) ?? null;
+  }
+
+  getHarvest(alertId: number): { alert_id: number; ts: number; status: string; swaps: number; buyers: number; note: string } | null {
+    return (
+      (this.db.prepare("SELECT * FROM harvests WHERE alert_id = ?").get(alertId) as
+        | { alert_id: number; ts: number; status: string; swaps: number; buyers: number; note: string }
+        | undefined) ?? null
+    );
   }
 
   getWallet(address: string): WalletRow | null {

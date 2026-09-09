@@ -254,7 +254,9 @@ export function buildConfig(env: Env, strict = true): Config {
     revivalMinAgeHours: num(env, "REVIVAL_MIN_AGE_HOURS", 6),
     revivalPriceChangePct: num(env, "REVIVAL_PRICE_CHANGE_PCT", 30),
     revivalLookbackMin: num(env, "REVIVAL_LOOKBACK_MIN", 120),
-    revivalMinVolH1Usd: num(env, "REVIVAL_MIN_VOL_H1_USD", 10_000),
+    // $PARLEY（MC $50K、出来高 $10.7K/h で拾って 15 倍）が下限 $10K を 7% しか超えていなかった。
+    // 静穏からの立ち上がりは出来高が小さいのが前提なので、ここは低めに置く
+    revivalMinVolH1Usd: num(env, "REVIVAL_MIN_VOL_H1_USD", 5_000),
     revivalVolSpikeRatio: num(env, "REVIVAL_VOL_SPIKE_RATIO", 3),
     revivalMinBuysH1: num(env, "REVIVAL_MIN_BUYS_H1", 10),
     revivalFastM5Pct: num(env, "REVIVAL_FAST_M5_PCT", 20),

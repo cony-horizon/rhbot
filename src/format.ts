@@ -265,10 +265,11 @@ export function formatSuppressedRow(a: AlertRow): string {
 
 /** ウォレット台帳の 1 行 */
 export function formatWalletRow(w: WalletRow, smartFrom: number): string {
-  const star = w.hits >= smartFrom ? "⭐ " : "　 ";
+  const star = w.hits >= smartFrom ? "⭐ " : w.tag ? "🏷 " : "　 ";
   const short = `${w.address.slice(0, 6)}…${w.address.slice(-4)}`;
   const last = fmtAge(Date.now() - w.last_seen);
-  return `${star}<code>${escapeHtml(short)}</code>  ${w.hits} 銘柄 / ${w.buys} 回 / ${fmtUsd(w.quote_volume)} 相当  最終 ${last}前`;
+  const tag = w.tag ? `  [${escapeHtml(w.tag)}]` : "";
+  return `${star}<code>${escapeHtml(short)}</code>  ${w.hits} 銘柄 / ${w.buys} 回 / ${fmtUsd(w.quote_volume)} 相当  最終 ${last}前${tag}`;
 }
 
 /** ウォレットの買い 1 件 */
