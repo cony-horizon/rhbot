@@ -141,12 +141,22 @@ export function assessScam(pair: DexPair, cfg: Config, now: number): ScamAssessm
   }
 
   // ③ 流動性 ÷ FDV。低いほど「値札だけ高く、実際には抜けられない」状態。
+  //
+  // 段階を付けている。$CUPCAKE は流動性 $864 に時価総額 $59.6M（0.0014%）で、
+  // $3 の買いが入るたびに値札だけ階段状に上がっていた。通知時点でも 0.5% 前後だったはずで、
+  // 1.9% と同じ +25 しか付かず、しきい値を 5 点下回って通ってしまった。
+  // 1% を切ればプール全部を売っても値が付かない。0.2% を切れば、それ単独で作り物と断じてよい。
   if (mc > 0 && liq > 0) {
     const depth = liq / mc;
-    if (depth < cfg.scamMinDepthPct / 100) {
-      add("depth", 25, `流動性が時価総額の ${(depth * 100).toFixed(1)}% しかない（売り抜けられない）`);
+    const pct = depth * 100;
+    if (pct < cfg.scamDepthDeadPct) {
+      add("depth", 55, `流動性が時価総額の ${pct < 0.01 ? pct.toFixed(4) : pct.toFixed(2)}% しかない（枯れたプールに値札だけ）`);
+    } else if (pct < cfg.scamDepthSeverePct) {
+      add("depth", 40, `流動性が時価総額の ${pct.toFixed(2)}% しかない（プール全部を売っても値が付かない）`);
+    } else if (depth < cfg.scamMinDepthPct / 100) {
+      add("depth", 25, `流動性が時価総額の ${pct.toFixed(1)}% しかない（売り抜けられない）`);
     } else if (depth < (cfg.scamMinDepthPct * 2.5) / 100) {
-      add("depth", 12, `流動性が時価総額の ${(depth * 100).toFixed(1)}% と薄い`);
+      add("depth", 12, `流動性が時価総額の ${pct.toFixed(1)}% と薄い`);
     }
   }
 

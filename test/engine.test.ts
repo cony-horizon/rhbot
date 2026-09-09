@@ -114,6 +114,9 @@ describe("Engine", () => {
   it("lookback 最安値比でも復活を検知できる（1h 変化率が小さい場合）", async () => {
     const { dex, sent, engine, setNow } = setup();
     const p = makePair({ ageHours: 40, volH1: 50, volH24: 1_000, price: 0.001, liq: 15_000 });
+    // helpers の既定 MC $2M に流動性 $15K だと深さ 0.75%＝ラグ後の形になってしまう。この試験の主題ではない
+    p.marketCap = 300_000;
+    p.fdv = 300_000;
     dex.searchResults = [p];
     await engine.discover();
     // 90 分かけてじわじわ +50%、DexScreener の 1h 変化率は +12% しか出ていない想定

@@ -366,3 +366,47 @@ describe("低時価総額レーン — 出来高が伴う小型を通す", () =>
     expect(detectNewLaunch({ now: NOW, pair: p, ageMs: 2 * 3_600_000, lastAlert: null, lookbackMinPrice: null }, loose)).not.toBeNull();
   });
 });
+
+
+/**
+ * 利用者が報告した実物: $CUPCAKE — ラグ後の枯れたプールに値札だけ付いた「はしご」。
+ * 流動性 $864 に時価総額 $59.6M。$3 の買いで階段状に上がり、レポートでは +7370% の最良コールに見えた。
+ * 通知時点の値は残っていないので、通知が通るために必要だった最低限（流動性 $5K 以上）から推定する。
+ */
+describe("$CUPCAKE — 枯れたプールの値札を通さない", () => {
+  function cupcake(mc: number, liq: number, volH1: number) {
+    const p = makePair({ symbol: "CUPCAKE", ageHours: 80, price: 0.06, volH1, volH24: 358_000, liq, buysH1: 60, sellsH1: 5, changeH1: 120 });
+    p.marketCap = mc;
+    p.fdv = mc;
+    return p;
+  }
+
+  it("いまの値（0.0014%）は深さの減点だけでしきい値を超える", () => {
+    const a = assessScam(cupcake(59_600_000, 864, 5_000), cfg, NOW);
+    const depth = a.signals.find((s) => s.id === "depth")!;
+    expect(depth.points).toBe(55);
+    expect(depth.points).toBeGreaterThanOrEqual(cfg.scamScoreThreshold);
+  });
+
+  it("通知時点の推定（流動性 $8K / 時価総額 $1.6M = 0.5%）でも止まる", () => {
+    const a = assessScam(cupcake(1_600_000, 8_000, 20_000), cfg, NOW);
+    expect(a.signals.find((s) => s.id === "depth")!.points).toBe(40);
+    expect(a.score).toBeGreaterThanOrEqual(cfg.scamScoreThreshold);
+  });
+
+  it("修正前の一律 +25 では 5 点足りずに通っていた（回帰の記録）", () => {
+    const a = assessScam(cupcake(1_600_000, 8_000, 20_000), cfg, NOW);
+    const withoutGrading = a.score - 40 + 25;
+    expect(withoutGrading).toBeLessThan(cfg.scamScoreThreshold);
+  });
+
+  it("段階はしきい値で動かせる", () => {
+    const loose = makeConfig({ SCAM_DEPTH_SEVERE_PCT: "0.3" });
+    expect(assessScam(cupcake(1_600_000, 8_000, 20_000), loose, NOW).signals.find((s) => s.id === "depth")!.points).toBe(25);
+  });
+
+  it("本物の初動（$SNOWBALL 9.4% / $QC 21.7%）には深さの減点が付かない", () => {
+    expect(assessScam(snowballLegit(), cfg, NOW).signals.some((s) => s.id === "depth")).toBe(false);
+    expect(assessScam(quantumCats(), cfg, NOW).signals.some((s) => s.id === "depth")).toBe(false);
+  });
+});

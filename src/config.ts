@@ -79,6 +79,8 @@ export interface Config {
   scamChurnMid: number;
   scamChurnHigh: number;
   scamMinDepthPct: number;
+  scamDepthSeverePct: number;
+  scamDepthDeadPct: number;
   scamPumpPct: number;
   scamPumpLiquidityUsd: number;
   scamMinLiquidityUsd: number;
@@ -281,6 +283,8 @@ export function buildConfig(env: Env, strict = true): Config {
     scamChurnMid: num(env, "SCAM_CHURN_MID", 4),
     scamChurnHigh: num(env, "SCAM_CHURN_HIGH", 8),
     scamMinDepthPct: num(env, "SCAM_MIN_DEPTH_PCT", 2),
+    scamDepthSeverePct: num(env, "SCAM_DEPTH_SEVERE_PCT", 1),
+    scamDepthDeadPct: num(env, "SCAM_DEPTH_DEAD_PCT", 0.2),
     scamPumpPct: num(env, "SCAM_PUMP_PCT", 1000),
     scamPumpLiquidityUsd: num(env, "SCAM_PUMP_LIQUIDITY_USD", 150_000),
     scamMinLiquidityUsd: num(env, "SCAM_MIN_LIQUIDITY_USD", 20_000),
