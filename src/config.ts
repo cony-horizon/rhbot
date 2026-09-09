@@ -266,14 +266,17 @@ export function buildConfig(env: Env, strict = true): Config {
     revivalBreakoutPct: num(env, "REVIVAL_BREAKOUT_PCT", 12),
     revivalRangeExcludeMin: num(env, "REVIVAL_RANGE_EXCLUDE_MIN", 30),
     reigniteEnabled: bool(env, "REIGNITE_ENABLED", true),
-    reigniteMinPeakMcUsd: num(env, "REIGNITE_MIN_PEAK_MC_USD", 800_000),
+    // $QC $175K・$PARLEY $50K・$MOO $150〜200K のレンジ（全盛期 $600K 前後）と、
+    // このチェーンの本物は $800K の門より小さいところで動いている
+    reigniteMinPeakMcUsd: num(env, "REIGNITE_MIN_PEAK_MC_USD", 300_000),
     reigniteCooledRatio: num(env, "REIGNITE_COOLED_RATIO", 0.8),
     reigniteBreakoutPct: num(env, "REIGNITE_BREAKOUT_PCT", 6),
     rangeWindowHours: num(env, "RANGE_WINDOW_HOURS", 48),
-    rangeMinHours: num(env, "RANGE_MIN_HOURS", 12),
+    // $MOO は 15 分足で 7〜8 時間の横ばいから抜けた。12 時間だと帯として認められない
+    rangeMinHours: num(env, "RANGE_MIN_HOURS", 6),
     rangeMaxWidthPct: num(env, "RANGE_MAX_WIDTH_PCT", 150),
     rangeMinSamples: num(env, "RANGE_MIN_SAMPLES", 20),
-    priorityPeakMcUsd: num(env, "PRIORITY_PEAK_MC_USD", 800_000),
+    priorityPeakMcUsd: num(env, "PRIORITY_PEAK_MC_USD", 300_000),
     priorityPollIntervalSec: num(env, "PRIORITY_POLL_INTERVAL_SEC", 45),
     revivalCooldownMin: num(env, "REVIVAL_COOLDOWN_MIN", 180),
     revivalEscalationPct: num(env, "REVIVAL_ESCALATION_PCT", 50),

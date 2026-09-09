@@ -663,3 +663,76 @@ describe("Engine — /ranges: いま何を待っているか", () => {
 function cfgFor() {
   return makeConfig({ DISCOVERY_SEARCH_QUERIES: "x", DISCOVERY_TOKEN_ADDRESSES: "", DISCOVERY_USE_PROFILES: "false" });
 }
+
+describe("Engine — $MOO: 全盛期 $600K・7.5 時間の帯を監視に入れる", () => {
+  /** 15 分足で見た $MOO: 初動で $600K → $150〜200K で 7.5 時間ヨコヨコ → 上抜け */
+  function seedMoo(store: Store, opts: { peakMc: number; rangeHours: number; nowMc: number; symbol?: string }) {
+    const symbol = opts.symbol ?? "MOO";
+    const addr = `0xpair_${symbol.toLowerCase()}`;
+    const mk = (mc: number) => {
+      const p = makePair({ address: addr, token: `0xtok_${symbol.toLowerCase()}`, symbol, ageHours: 20, price: mc / 1e9, liq: 25_000 });
+      p.marketCap = mc;
+      p.fdv = mc;
+      return p;
+    };
+    store.upsertPair(mk(opts.peakMc), "test", NOW - 12 * H);
+    // 45 秒間隔（hot）で観測される想定。帯の中を往復
+    const n = Math.floor((opts.rangeHours * 3600) / 45);
+    for (let i = 0; i < n; i++) store.insertSnapshot(mk(i % 2 === 0 ? 150_000 : 200_000), NOW - (opts.rangeHours + 0.2) * H + i * 45_000);
+    store.insertSnapshot(mk(opts.nowMc), NOW - 60_000);
+    return addr;
+  }
+
+  it("新しい門（$300K / 6h）では監視に入り、上抜けまでの距離が出る", () => {
+    const { store, engine } = setup();
+    seedMoo(store, { peakMc: 600_000, rangeHours: 7.5, nowMc: 185_000 });
+    const list = engine.rangeWatchlist(NOW);
+    expect(list.map((w) => w.row.base_symbol)).toContain("MOO");
+    const w = list.find((x) => x.row.base_symbol === "MOO")!;
+    expect(w.primed).toBe(true);
+    expect(w.range.low).toBe(150_000);
+    expect(w.range.high).toBe(200_000);
+    expect(w.toBreakoutPct).toBeGreaterThan(0);
+  });
+
+  it("旧の門（$800K / 12h）だと二重に漏れていた（回帰の記録）", () => {
+    const cfgOld = makeConfig({ DISCOVERY_SEARCH_QUERIES: "x", DISCOVERY_USE_PROFILES: "false", REIGNITE_MIN_PEAK_MC_USD: "800000", RANGE_MIN_HOURS: "12" });
+    const store = new Store(":memory:");
+    const engine = new Engine(cfgOld, store, {} as unknown as DexScreenerClient, { broadcast: async () => {} }, null, () => NOW);
+    seedMoo(store, { peakMc: 600_000, rangeHours: 7.5, nowMc: 185_000 });
+    expect(engine.rangeWatchlist(NOW)).toHaveLength(0);
+    const d = engine.rangeDiagnosis("0xtok_moo", NOW)!;
+    expect(d.peakOk).toBe(false);
+    expect(d.inCandidates).toBe(false);
+    // 帯も 12h に届かない
+    expect(d.range).toBeNull();
+    expect(d.windows.some((w) => w.why.includes("< 12h"))).toBe(true);
+  });
+
+  it("診断は『何が足りないか』を窓ごとに言う", () => {
+    const { store, engine } = setup();
+    // 全盛期は門を超えるが、帯がまだ 2 時間しか無い
+    seedMoo(store, { peakMc: 600_000, rangeHours: 2, nowMc: 185_000, symbol: "YOUNG" });
+    const d = engine.rangeDiagnosis("0xtok_young", NOW)!;
+    expect(d.peakOk).toBe(true);
+    expect(d.cooled).toBe(true);
+    expect(d.range).toBeNull();
+    expect(d.primed).toBe(false);
+    expect(d.windows.every((w) => !w.ok)).toBe(true);
+    expect(d.windows[d.windows.length - 1]!.why).toMatch(/期間 .*h < 6h/);
+  });
+
+  it("まだ冷えていない銘柄は、母集団にいても primed にしない", () => {
+    const { store, engine } = setup();
+    seedMoo(store, { peakMc: 600_000, rangeHours: 7.5, nowMc: 560_000, symbol: "WARM" });
+    const d = engine.rangeDiagnosis("0xtok_warm", NOW)!;
+    expect(d.inCandidates).toBe(true);
+    expect(d.cooled).toBe(false);
+    expect(d.primed).toBe(false);
+  });
+
+  it("知らないアドレスは null", () => {
+    const { engine } = setup();
+    expect(engine.rangeDiagnosis("0xnobody", NOW)).toBeNull();
+  });
+});

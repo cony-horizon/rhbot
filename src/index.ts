@@ -1,7 +1,7 @@
 import { ConfigError, loadConfig, type Config } from "./config.js";
 import { DexScreenerClient } from "./dexscreener.js";
 import { Engine } from "./engine.js";
-import { escapeHtml, fmtPrice, fmtUsd, formatAlertRow, formatPairRow, formatRangeWatch, formatSuppressedRow, formatWalletBuyRow, formatWalletRow } from "./format.js";
+import { escapeHtml, fmtAge, fmtPrice, fmtUsd, formatAlertRow, formatPairRow, formatRangeWatch, formatSuppressedRow, formatWalletBuyRow, formatWalletRow } from "./format.js";
 import { formatRecentOutcomes } from "./outcomes.js";
 import { log, setLogLevel } from "./logger.js";
 import { RpcClient } from "./rpc.js";
@@ -12,7 +12,7 @@ import { CommandLoop, TelegramClient, TelegramError, TelegramNetworkError } from
 const COMMANDS = [
   { command: "status", description: "監視状況を表示" },
   { command: "top", description: "1h 出来高上位ペア" },
-  { command: "ranges", description: "いまヨコヨコを組んでいる銘柄と、上抜けまでの距離" },
+  { command: "ranges", description: "ヨコヨコ中の銘柄と上抜けまでの距離。アドレスを付けるとその銘柄の診断" },
   { command: "alerts", description: "直近のアラート履歴" },
   { command: "test", description: "通知の見本を送って配信を確認" },
   { command: "filtered", description: "スキャム判定で止めた通知を見る" },
@@ -200,6 +200,35 @@ async function main(): Promise<void> {
           return `${formatWalletRow(w, cfg.smartMinHits)}\n\n<b>買い履歴</b>\n` + buys.map(formatWalletBuyRow).join("\n");
         }
         case "ranges": {
+          if (args[0] && /^0x[0-9a-fA-F]{40,64}$/.test(args[0])) {
+            const d = engine.rangeDiagnosis(args[0]);
+            if (!d) return `${escapeHtml(args[0])} は監視に入っていません。/watch で追加すると観測が始まります`;
+            const floor = cfg.reigniteMinPeakMcUsd;
+            const lines = [
+              `🔎 <b>$${escapeHtml(d.row.base_symbol)}</b> のヨコヨコ監視状況`,
+              d.row.manual === 1
+                ? `全盛期 MC ${fmtUsd(d.row.peak_mc)}（手動監視なので門は不問）`
+                : `全盛期 MC ${fmtUsd(d.row.peak_mc)}  ${d.peakOk ? `✅ 門 ${fmtUsd(floor)} 以上` : `❌ 門 ${fmtUsd(floor)} 未満 → 母集団に入らない`}`,
+              d.currentMc !== null
+                ? `いま ${fmtUsd(d.currentMc)}${d.cooledRatio !== null ? ` = 全盛期の ${Math.round(d.cooledRatio * 100)}%  ${d.cooled ? "✅ 冷えている" : `❌ ${Math.round(cfg.reigniteCooledRatio * 100)}% より高い → まだ冷えていない`}` : ""}`
+                : "いま: 時価総額の観測なし",
+            ];
+            if (d.range) {
+              lines.push(`帯 ${fmtUsd(d.range.low)}〜${fmtUsd(d.range.high)}（幅 ${d.range.widthPct.toFixed(0)}% / ${fmtAge(d.range.durationMs)} / ${d.range.samples} 点）✅`);
+              if (d.toBreakoutPct !== null) {
+                lines.push(d.toBreakoutPct <= 0 ? `→ 上抜け条件に到達済み（${fmtUsd(d.triggerMc)}）` : `→ 上抜けまで あと <b>+${d.toBreakoutPct.toFixed(1)}%</b>（${fmtUsd(d.triggerMc)} で再点火）`);
+              }
+            } else {
+              lines.push("帯: ❌ 成立していない");
+              for (const w of d.windows) lines.push(`　${String(w.hours).padStart(2)}h 窓: ${escapeHtml(w.why)}`);
+            }
+            lines.push("");
+            if (d.primed) lines.push("✅ 監視に入っていて、上抜けを待っている状態です");
+            else if (!d.inCandidates) lines.push(`❌ 監視に入っていません。全盛期が門に届いていないため。門を下げるなら .env の REIGNITE_MIN_PEAK_MC_USD`);
+            else if (!d.cooled) lines.push("⏸ 母集団には入っているが、まだ冷えていないので再点火の対象外");
+            else lines.push("⏸ 母集団には入っているが、帯が成立していない。上の窓ごとの理由を参照（RANGE_MIN_HOURS / RANGE_MIN_SAMPLES / RANGE_MAX_WIDTH_PCT）");
+            return lines.join("\n");
+          }
           const n = Math.min(30, Number(args[0]) || 15);
           const all = engine.rangeWatchlist();
           if (all.length === 0) {

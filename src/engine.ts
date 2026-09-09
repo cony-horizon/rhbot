@@ -3,7 +3,7 @@ import { DexScreenerClient, liquidityUsd, pairAgeMs, priceUsd, vol, type DexPair
 import { detectNewLaunch } from "./detectors/newLaunch.js";
 import { detectRevival } from "./detectors/revival.js";
 import { assessScam, formatScamSummary, type ScamAssessment } from "./detectors/scam.js";
-import { findLongestRange, type RangeInfo } from "./detectors/range.js";
+import { candidateWindows, findLongestRange, toRange, type RangeInfo } from "./detectors/range.js";
 import type { Detection } from "./detectors/types.js";
 import { baseMetrics, HOUR_MS, MINUTE_MS } from "./detectors/common.js";
 import { formatAlert, type AlertViewOptions } from "./format.js";
@@ -38,6 +38,31 @@ export interface RangeWatch {
 export type HarvestTokenResult =
   | { ok: false; reason: string }
   | { ok: true; pair: PairRow; alert: AlertRow; hours: number; result: HarvestResult; tagged: number; buyers: EarlyBuyer[] };
+
+export interface RangeWindowCheck {
+  hours: number;
+  ok: boolean;
+  why: string;
+}
+
+/** /ranges <address> の診断結果 */
+export interface RangeDiagnosis {
+  row: PairRow;
+  /** 全盛期 MC が門を超えているか */
+  peakOk: boolean;
+  /** 一覧の母集団に入っているか（門を超えるか手動） */
+  inCandidates: boolean;
+  currentMc: number | null;
+  cooledRatio: number | null;
+  cooled: boolean;
+  range: RangeInfo | null;
+  /** 長い窓から順に試した結果 */
+  windows: RangeWindowCheck[];
+  triggerMc: number | null;
+  toBreakoutPct: number | null;
+  /** 条件が全部揃い、あとは上抜けを待つだけか */
+  primed: boolean;
+}
 
 export interface AlertSink {
   broadcast(html: string): Promise<void>;
@@ -599,6 +624,62 @@ export class Engine {
     const tagged = result.status === "ok" ? this.store.tagWalletsForToken(pair.base_address, pair.base_symbol) : 0;
     const buyers = this.store.earlyBuyersForToken(pair.base_address, 15);
     return { ok: true, pair, alert, hours, result, tagged, buyers };
+  }
+
+  /**
+   * 「この銘柄はヨコヨコ監視に入っていたか。入っていないなら何が足りないか」に答える（/ranges <address>）。
+   *
+   * 急変で拾えた銘柄について「先にレンジで待てていたか」を利用者が確かめられないと、
+   * 門の高さが合っているかを判断できない。$MOO はこれで全盛期の門（$800K）が高すぎると分かった。
+   */
+  rangeDiagnosis(address: string, now = this.now()): RangeDiagnosis | null {
+    let rows = this.store.listPairsByToken(address);
+    if (rows.length === 0) {
+      const one = this.store.getPair(address);
+      if (one) rows = [one];
+    }
+    const row = rows.sort((a, b) => b.last_liquidity_usd - a.last_liquidity_usd)[0];
+    if (!row) return null;
+
+    const peakOk = row.peak_mc >= this.cfg.reigniteMinPeakMcUsd;
+    const inCandidates = peakOk || row.manual === 1;
+    const currentMc = this.store.latestMc(row.pair_address);
+    const cooledRatio = currentMc !== null && row.peak_mc > 0 ? currentMc / row.peak_mc : null;
+    const cooled = cooledRatio !== null && cooledRatio <= this.cfg.reigniteCooledRatio;
+
+    // 窓ごとに「なぜ帯にならないか」を残す。成立した最初の窓で止める
+    const to = now - this.cfg.revivalRangeExcludeMin * MINUTE_MS;
+    const windows: RangeWindowCheck[] = [];
+    let range: RangeInfo | null = null;
+    for (const hours of candidateWindows(this.cfg)) {
+      const raw = this.store.mcRangeBetween(row.pair_address, to - hours * HOUR_MS, to);
+      const r = toRange(raw, this.cfg);
+      let why = "";
+      if (!raw) why = "観測なし";
+      else if (raw.samples < this.cfg.rangeMinSamples) why = `観測 ${raw.samples} 点 < ${this.cfg.rangeMinSamples} 点`;
+      else if (raw.lastTs - raw.firstTs < this.cfg.rangeMinHours * HOUR_MS) why = `期間 ${((raw.lastTs - raw.firstTs) / HOUR_MS).toFixed(1)}h < ${this.cfg.rangeMinHours}h`;
+      else if ((raw.high / raw.low - 1) * 100 > this.cfg.rangeMaxWidthPct) why = `幅 ${((raw.high / raw.low - 1) * 100).toFixed(0)}% > ${this.cfg.rangeMaxWidthPct}%（スパイクを含む）`;
+      windows.push({ hours, ok: r !== null, why });
+      if (r) {
+        range = r;
+        break;
+      }
+    }
+
+    const triggerMc = range ? range.high * (1 + this.cfg.reigniteBreakoutPct / 100) : null;
+    return {
+      row,
+      peakOk,
+      inCandidates,
+      currentMc,
+      cooledRatio,
+      cooled,
+      range,
+      windows,
+      triggerMc,
+      toBreakoutPct: triggerMc !== null && currentMc !== null && currentMc > 0 ? (triggerMc / currentMc - 1) * 100 : null,
+      primed: inCandidates && peakOk && cooled && range !== null,
+    };
   }
 
   /* ---------------- メンテナンス ---------------- */
