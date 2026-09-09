@@ -410,3 +410,42 @@ describe("$CUPCAKE — 枯れたプールの値札を通さない", () => {
     expect(assessScam(quantumCats(), cfg, NOW).signals.some((s) => s.id === "depth")).toBe(false);
   });
 });
+
+describe("steady_wash — 出来高が何時間もほぼ一定", () => {
+  const busy = () => makePair({ ageHours: 60, volH1: 30_000, volH24: 600_000, liq: 20_000, buysH1: 40, sellsH1: 12 });
+
+  it("流動性に対して十分な出来高が、時間ごとにほぼ同じなら立つ", () => {
+    const a = assessScam(busy(), cfg, NOW, { volCv: { hours: 12, mean: 30_000, cv: 0.05 } });
+    const sig = a.signals.find((s) => s.id === "steady_wash")!;
+    expect(sig).toBeDefined();
+    // 毎時 $30K は流動性 $20K を超える＝プールが毎時間入れ替わる。単独でしきい値に届く
+    expect(sig.points).toBe(50);
+    expect(sig.points).toBeGreaterThanOrEqual(cfg.scamScoreThreshold);
+    expect(sig.label).toContain("12 時間ほぼ一定");
+  });
+
+  it("流動性の半分〜同額なら +30（他の指標と合わせて判断）", () => {
+    const a = assessScam(busy(), cfg, NOW, { volCv: { hours: 12, mean: 14_000, cv: 0.05 } });
+    expect(a.signals.find((s) => s.id === "steady_wash")!.points).toBe(30);
+  });
+
+  it("出来高が波打っていれば立たない", () => {
+    const a = assessScam(busy(), cfg, NOW, { volCv: { hours: 12, mean: 30_000, cv: 0.7 } });
+    expect(a.signals.some((s) => s.id === "steady_wash")).toBe(false);
+  });
+
+  it("一定でも出来高が流動性に対して小さければ、静かなだけ", () => {
+    const quiet = makePair({ ageHours: 60, volH1: 800, volH24: 15_000, liq: 20_000, buysH1: 5, sellsH1: 4 });
+    const a = assessScam(quiet, cfg, NOW, { volCv: { hours: 12, mean: 800, cv: 0.05 } });
+    expect(a.signals.some((s) => s.id === "steady_wash")).toBe(false);
+  });
+
+  it("観測時間が足りなければ判断しない", () => {
+    const a = assessScam(busy(), cfg, NOW, { volCv: { hours: 3, mean: 30_000, cv: 0.05 } });
+    expect(a.signals.some((s) => s.id === "steady_wash")).toBe(false);
+  });
+
+  it("履歴を渡さなければ従来どおり", () => {
+    expect(assessScam(busy(), cfg, NOW).signals.some((s) => s.id === "steady_wash")).toBe(false);
+  });
+});

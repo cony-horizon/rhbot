@@ -698,6 +698,34 @@ export class Store {
     return row.n;
   }
 
+  latestSnapshot(pairAddress: string): SnapshotRow | null {
+    return (
+      (this.db
+        .prepare("SELECT ts, price_usd, market_cap, vol_h1, vol_h24, liquidity_usd, buys_h1, sells_h1 FROM snapshots WHERE pair_address = ? ORDER BY ts DESC LIMIT 1")
+        .get(pairAddress.toLowerCase()) as SnapshotRow | undefined) ?? null
+    );
+  }
+
+  /**
+   * 1h 出来高の「時間ごとの平均」の散らばり。
+   * スナップショットは 45 秒〜4 分間隔で、1h 出来高はその間ほぼ同じ値を返すので、
+   * そのまま並べると何でも一定に見える。1 時間単位に潰してから変動係数を取る。
+   */
+  hourlyVolumeCv(pairAddress: string, fromTs: number, toTs: number): { hours: number; mean: number; cv: number } | null {
+    const rows = this.db
+      .prepare(
+        `SELECT AVG(vol_h1) AS v FROM snapshots WHERE pair_address = ? AND ts >= ? AND ts <= ?
+         GROUP BY CAST(ts / 3600000 AS INTEGER) ORDER BY 1`,
+      )
+      .all(pairAddress.toLowerCase(), fromTs, toTs) as { v: number }[];
+    if (rows.length < 2) return null;
+    const xs = rows.map((r) => r.v);
+    const mean = xs.reduce((a, b) => a + b, 0) / xs.length;
+    if (mean <= 0) return { hours: xs.length, mean: 0, cv: 0 };
+    const sd = Math.sqrt(xs.reduce((a, b) => a + (b - mean) ** 2, 0) / xs.length);
+    return { hours: xs.length, mean, cv: sd / mean };
+  }
+
   listSnapshots(pairAddress: string, sinceTs: number): SnapshotRow[] {
     return this.db
       .prepare("SELECT ts, price_usd, market_cap, vol_h1, vol_h24, liquidity_usd, buys_h1, sells_h1 FROM snapshots WHERE pair_address = ? AND ts >= ? ORDER BY ts ASC")

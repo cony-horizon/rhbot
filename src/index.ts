@@ -216,6 +216,12 @@ async function main(): Promise<void> {
             if (d.currentMc !== null && !d.mcOk) {
               lines.push(`❌ いまの時価総額が ${fmtUsd(cfg.rangeMinMcUsd)} 未満 → 死んだ銘柄として監視から外す（動きがあれば急変レーンが拾う）`);
             }
+            if (!d.liqOk) lines.push(`❌ いまの流動性が通知の下限 ${fmtUsd(cfg.minLiquidityUsd)} 未満 → 抜かれている`);
+            if (d.scam) {
+              const bad = cfg.scamFilterEnabled && d.scam.score >= cfg.scamScoreThreshold;
+              lines.push(`リスク ${d.scam.score}/100 ${bad ? "❌ しきい値以上 → 一覧から除外" : "✅"}`);
+              for (const sig of d.scam.signals) lines.push(`　・${escapeHtml(sig.label)}`);
+            }
             if (d.range) {
               lines.push(`帯 ${fmtUsd(d.range.low)}〜${fmtUsd(d.range.high)}（幅 ${d.range.widthPct.toFixed(0)}% / ${fmtAge(d.range.durationMs)} / ${d.range.samples} 点）✅`);
               if (d.toBreakoutPct !== null) {
@@ -229,17 +235,22 @@ async function main(): Promise<void> {
             if (d.primed) lines.push("✅ 監視に入っていて、上抜けを待っている状態です");
             else if (!d.inCandidates) lines.push(`❌ 監視に入っていません。全盛期が門に届いていないため。門を下げるなら .env の REIGNITE_MIN_PEAK_MC_USD`);
             else if (!d.mcOk) lines.push(`❌ 監視から外しています。いまの時価総額が小さすぎるため（RANGE_MIN_MC_USD）`);
+            else if (!d.liqOk) lines.push(`❌ 監視から外しています。流動性が抜かれているため`);
+            else if (d.scam && cfg.scamFilterEnabled && d.scam.score >= cfg.scamScoreThreshold) lines.push(`❌ 監視から外しています。作られた出来高の疑い（上のリスク内訳）。判定を緩めるなら SCAM_SCORE_THRESHOLD`);
             else if (!d.cooled) lines.push("⏸ 母集団には入っているが、まだ冷えていないので再点火の対象外");
             else lines.push("⏸ 母集団には入っているが、帯が成立していない。上の窓ごとの理由を参照（RANGE_MIN_HOURS / RANGE_MIN_SAMPLES / RANGE_MAX_WIDTH_PCT）");
             return lines.join("\n");
           }
           const n = Math.min(30, Number(args[0]) || 15);
-          const all = engine.rangeWatchlist();
+          const { list: all, excludedScam, excludedLiq } = engine.rangeWatchlistDetailed();
+          const excluded = excludedScam + excludedLiq;
+          const excludedNote = excluded > 0 ? `\n🚫 帯は組んでいるが除外: ${excluded} 件（流動性抜き ${excludedLiq} / 作られた出来高 ${excludedScam}）` : "";
           if (all.length === 0) {
             return (
               "いまヨコヨコと判定できる銘柄はありません。\n" +
               `帯として認めるには ${cfg.rangeMinHours} 時間以上・${cfg.rangeMinSamples} 点以上の観測が要ります。` +
-              "起動直後は履歴が足りないので、しばらく回してから見てください。"
+              "起動直後は履歴が足りないので、しばらく回してから見てください。" +
+              excludedNote
             );
           }
           const primed = all.filter((w) => w.primed);
@@ -247,7 +258,8 @@ async function main(): Promise<void> {
           const head =
             `<b>ヨコヨコ監視中 ${primed.length} 件</b>` +
             (all.length > primed.length ? `（帯を組んでいる銘柄は全 ${all.length} 件）` : "") +
-            `\n上抜け条件: 帯の上限 +${cfg.reigniteBreakoutPct}%`;
+            `\n上抜け条件: 帯の上限 +${cfg.reigniteBreakoutPct}%` +
+            excludedNote;
           return (
             head +
             "\n\n" +

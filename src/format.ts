@@ -238,8 +238,9 @@ export function formatRangeWatch(w: RangeWatch): string {
   const dist = w.toBreakoutPct <= 0 ? "上抜け済み" : `あと <b>+${w.toBreakoutPct.toFixed(1)}%</b>`;
   const cooled = w.cooledRatio !== null ? `全盛期の ${Math.round(w.cooledRatio * 100)}%` : "全盛期不明";
   const status = w.primed ? "" : " ⏸ 再点火の条件未達";
+  const risk = w.scam && w.scam.score >= 20 ? ` ⚠️${w.scam.score}` : "";
   return [
-    `${near} <b>$${escapeHtml(w.row.base_symbol)}</b> — ${dist}で再点火${status}`,
+    `${near} <b>$${escapeHtml(w.row.base_symbol)}</b> — ${dist}で再点火${status}${risk}`,
     `　帯 ${fmtUsd(w.range.low)}〜${fmtUsd(w.range.high)}（幅 ${w.range.widthPct.toFixed(0)}% / ${fmtAge(w.range.durationMs)}）`,
     `　いま ${fmtUsd(w.currentMc)}（帯の ${Math.round(w.posInRangePct)}% 地点・${cooled}）| 全盛期 ${fmtUsd(w.row.peak_mc)}`,
     `　<code>${escapeHtml(w.row.base_address)}</code>`,

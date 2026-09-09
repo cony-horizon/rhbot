@@ -780,3 +780,79 @@ describe("Engine — 死んだ銘柄をヨコヨコ監視から外す（RANGE_MI
     expect(engine.rangeWatchlist(NOW)).toHaveLength(1);
   });
 });
+
+describe("Engine — /ranges にバンドルを並べない", () => {
+  /**
+   * 利用者が /ranges で見た 2 つの型:
+   *   A. 流動性を抜かれた銘柄（平坦な線だけ残る）
+   *   B. ボットが一定の出来高で価格を固定している銘柄
+   * どちらも全盛期の門は通り、帯の条件も満たすので、判定なしでは一覧に出てしまう
+   */
+  function seedFlat(store: Store, o: { symbol: string; liq: number; volH1: (hour: number) => number; buys: number; sells: number; nowMc?: number }) {
+    const addr = `0xpair_${o.symbol.toLowerCase()}`;
+    const mk = (mc: number, liq: number, volH1: number) => {
+      const p = makePair({ address: addr, token: `0xtok_${o.symbol.toLowerCase()}`, symbol: o.symbol, ageHours: 60, price: mc / 1e9, liq, volH1, volH24: volH1 * 20, buysH1: o.buys, sellsH1: o.sells });
+      p.marketCap = mc;
+      p.fdv = mc;
+      return p;
+    };
+    store.upsertPair(mk(600_000, 80_000, 50_000), "test", NOW - 40 * H);
+    const nowMc = o.nowMc ?? 120_000;
+    // 12 時間、45 秒ごと。時価総額は狭い帯、出来高は関数で与える
+    for (let t = 12 * H; t > 0; t -= 45_000) {
+      const hour = Math.floor(t / H);
+      const mc = nowMc * (t % (2 * 45_000) === 0 ? 0.97 : 1.03);
+      store.insertSnapshot(mk(mc, o.liq, o.volH1(hour)), NOW - t);
+    }
+    return addr;
+  }
+
+  it("A. 流動性を抜かれた銘柄は一覧に出さない", () => {
+    const { store, engine } = setup();
+    seedFlat(store, { symbol: "RUGGED", liq: 400, volH1: () => 200, buys: 2, sells: 1 });
+    const r = engine.rangeWatchlistDetailed(NOW);
+    expect(r.list).toHaveLength(0);
+    expect(r.excludedLiq).toBe(1);
+    const d = engine.rangeDiagnosis("0xtok_rugged", NOW)!;
+    expect(d.liqOk).toBe(false);
+    expect(d.primed).toBe(false);
+  });
+
+  it("B. 一定の出来高で回されている銘柄は一覧に出さない", () => {
+    const { store, engine } = setup();
+    // 流動性 $20K に対し毎時 $30K が判で押したように流れる。少数の大口、買い偏重
+    seedFlat(store, { symbol: "BOTTED", liq: 20_000, volH1: () => 30_000, buys: 40, sells: 12 });
+    const r = engine.rangeWatchlistDetailed(NOW);
+    expect(r.list).toHaveLength(0);
+    expect(r.excludedScam).toBe(1);
+    const d = engine.rangeDiagnosis("0xtok_botted", NOW)!;
+    expect(d.scam!.signals.map((s) => s.id)).toContain("steady_wash");
+    expect(d.scam!.score).toBeGreaterThanOrEqual(cfgFor().scamScoreThreshold);
+  });
+
+  it("本物の帯（出来高が波打ち、参加者に厚みがある）は残る", () => {
+    const { store, engine } = setup();
+    // 出来高は時間ごとに 3 倍〜1/3 で揺れる。小口が多数
+    seedFlat(store, { symbol: "REAL", liq: 40_000, volH1: (h) => [4_000, 15_000, 9_000, 2_500, 12_000, 6_000, 20_000, 3_000, 8_000, 11_000, 5_000, 14_000][h % 12]!, buys: 50, sells: 40 });
+    const r = engine.rangeWatchlistDetailed(NOW);
+    expect(r.list.map((w) => w.row.base_symbol)).toEqual(["REAL"]);
+    expect(r.excludedScam + r.excludedLiq).toBe(0);
+    expect(r.list[0]!.scam!.signals.map((s) => s.id)).not.toContain("steady_wash");
+  });
+
+  it("一覧で除外した銘柄は、上抜けても通知しない（一覧と通知がずれない）", async () => {
+    const { store, engine, dex, sent } = setup();
+    const addr = seedFlat(store, { symbol: "BOTTED", liq: 20_000, volH1: () => 30_000, buys: 40, sells: 12 });
+    // 帯の上限 +10% まで上げる
+    const broke = makePair({ address: addr, token: "0xtok_botted", symbol: "BOTTED", ageHours: 60, price: 0.000136, liq: 20_000, volH1: 30_000, volH24: 600_000, buysH1: 40, sellsH1: 12, changeH1: 10 });
+    broke.marketCap = 136_000;
+    broke.fdv = 136_000;
+    dex.set(broke);
+    store.setTier(addr, "dormant", NOW - H);
+    await engine.refreshTier("dormant", 5);
+    expect(sent.join("\n")).not.toContain("$BOTTED");
+    const a = store.recentSuppressed(5).find((x) => x.symbol === "BOTTED");
+    expect(a).toBeDefined();
+    expect(a!.scam_reasons).toContain("ほぼ一定");
+  });
+});

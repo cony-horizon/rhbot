@@ -93,6 +93,9 @@ export interface Config {
   scamBreadthNeeded: number;
   scamBreadthSmallMcUsd: number;
   scamBreadthSmallMinTxns: number;
+  scamSteadyCv: number;
+  scamSteadyMinHours: number;
+  scamSteadyMinChurn: number;
 
   volLevelMidUsd: number;
   volLevelHighUsd: number;
@@ -305,6 +308,12 @@ export function buildConfig(env: Env, strict = true): Config {
     // 件数の下限は規模で変える。小型に大型と同じ件数を求めても実需があっても届かない
     scamBreadthSmallMcUsd: num(env, "SCAM_BREADTH_SMALL_MC_USD", 1_000_000),
     scamBreadthSmallMinTxns: num(env, "SCAM_BREADTH_SMALL_MIN_TXNS", 300),
+    // 出来高が何時間もほぼ一定＝機械的な回し。本物の市場は出来高が波打つ。
+    // 1h 出来高を 1 時間ごとに平均し、その変動係数（標準偏差÷平均）がこれ以下なら疑う
+    scamSteadyCv: num(env, "SCAM_STEADY_CV", 0.2),
+    scamSteadyMinHours: num(env, "SCAM_STEADY_MIN_HOURS", 6),
+    // ただし出来高が流動性に対して小さければ、一定でも「静かなだけ」なので疑わない
+    scamSteadyMinChurn: num(env, "SCAM_STEADY_MIN_CHURN", 0.5),
 
     volLevelMidUsd: num(env, "VOL_LEVEL_MID_USD", 50_000),
     volLevelHighUsd: num(env, "VOL_LEVEL_HIGH_USD", 250_000),

@@ -2,14 +2,14 @@ import type { Config } from "./config.js";
 import { DexScreenerClient, liquidityUsd, pairAgeMs, priceUsd, vol, type DexPair } from "./dexscreener.js";
 import { detectNewLaunch } from "./detectors/newLaunch.js";
 import { detectRevival } from "./detectors/revival.js";
-import { assessScam, formatScamSummary, type ScamAssessment } from "./detectors/scam.js";
+import { assessScam, formatScamSummary, type ScamAssessment, type ScamHistory } from "./detectors/scam.js";
 import { candidateWindows, findLongestRange, toRange, type RangeInfo } from "./detectors/range.js";
 import type { Detection } from "./detectors/types.js";
 import { baseMetrics, HOUR_MS, MINUTE_MS } from "./detectors/common.js";
 import { formatAlert, type AlertViewOptions } from "./format.js";
 import { log } from "./logger.js";
 import { PoolScanner, RpcClient } from "./rpc.js";
-import type { AlertRow, EarlyBuyer, PairRow, Store, Tier } from "./store.js";
+import type { AlertRow, EarlyBuyer, PairRow, SnapshotRow, Store, Tier } from "./store.js";
 import { buildDailyReport, computeOutcomes, jst } from "./outcomes.js";
 import { SwapHarvester, type HarvestResult } from "./smartwallets.js";
 
@@ -33,6 +33,8 @@ export interface RangeWatch {
   cooledRatio: number | null;
   /** 全盛期 MC と冷え込みの条件を満たし、あとは上抜けを待つだけか */
   primed: boolean;
+  /** いまの状態でのスキャム判定（一覧に出ている＝しきい値未満） */
+  scam: ScamAssessment | null;
 }
 
 export type HarvestTokenResult =
@@ -55,6 +57,10 @@ export interface RangeDiagnosis {
   currentMc: number | null;
   /** いまの時価総額が RANGE_MIN_MC_USD 以上か（死んだ銘柄の除外） */
   mcOk: boolean;
+  /** いまの流動性が通知の下限以上か（抜かれていないか） */
+  liqOk: boolean;
+  /** いまの状態でのスキャム判定 */
+  scam: ScamAssessment | null;
   cooledRatio: number | null;
   cooled: boolean;
   range: RangeInfo | null;
@@ -339,6 +345,51 @@ export class Engine {
     return findLongestRange((from, to) => this.store.mcRangeBetween(pairAddress, from, to), now, this.cfg);
   }
 
+  /** スナップショットから分かる履歴。スキャム判定に渡す */
+  private scamHistory(pairAddress: string, now: number): ScamHistory {
+    return { volCv: this.store.hourlyVolumeCv(pairAddress, now - 24 * HOUR_MS, now) };
+  }
+
+  /**
+   * 直近のスナップショットを DexPair の形に戻す。
+   * 一覧で「いまの状態」にスキャム判定を掛けるため。価格変化率は保存していないので 0 にしておく
+   * （thin_pump は立たないが、流動性・深さ・出来高比・厚み・出来高の一定さは判定できる）
+   */
+  private snapshotAsPair(row: PairRow, snap: SnapshotRow): DexPair {
+    return {
+      chainId: row.chain_id,
+      dexId: row.dex_id,
+      url: row.url,
+      pairAddress: row.pair_address,
+      labels: row.labels ? row.labels.split(",") : [],
+      baseToken: { address: row.base_address, name: row.base_name, symbol: row.base_symbol },
+      quoteToken: { address: row.quote_address, name: "", symbol: row.quote_symbol },
+      priceNative: "0",
+      priceUsd: snap.price_usd === null ? undefined : String(snap.price_usd),
+      txns: { m5: { buys: 0, sells: 0 }, h1: { buys: snap.buys_h1, sells: snap.sells_h1 }, h6: { buys: 0, sells: 0 }, h24: { buys: 0, sells: 0 } },
+      volume: { m5: 0, h1: snap.vol_h1, h6: 0, h24: snap.vol_h24 },
+      priceChange: { m5: 0, h1: 0, h6: 0, h24: 0 },
+      liquidity: { usd: snap.liquidity_usd, base: 0, quote: 0 },
+      fdv: snap.market_cap,
+      marketCap: snap.market_cap,
+      pairCreatedAt: row.pair_created_at ?? undefined,
+    };
+  }
+
+  /**
+   * 帯の候補に「いまの状態」でスキャム判定を掛ける。
+   * 利用者が /ranges で見た行の大半が、流動性を抜かれた銘柄と、一定の出来高で価格を
+   * 固定された銘柄だった。判定は通知の瞬間にしか走っていなかったので、一覧には素通りしていた。
+   */
+  private rangeGate(row: PairRow, now: number): { snap: SnapshotRow | null; liqOk: boolean; scam: ScamAssessment | null; blocked: boolean } {
+    const snap = this.store.latestSnapshot(row.pair_address);
+    if (!snap) return { snap: null, liqOk: false, scam: null, blocked: true };
+    const liqOk = snap.liquidity_usd >= this.cfg.minLiquidityUsd;
+    const scam = assessScam(this.snapshotAsPair(row, snap), this.cfg, now, this.scamHistory(row.pair_address, now));
+    const blocked = !liqOk || (this.cfg.scamFilterEnabled && scam.score >= this.cfg.scamScoreThreshold);
+    return { snap, liqOk, scam, blocked };
+  }
+
   /**
    * いまヨコヨコを組んでいる銘柄の一覧（/ranges 用）。
    *
@@ -348,7 +399,13 @@ export class Engine {
    * 判定式を書き写すと通知と一覧がずれるので、しきい値も detectRevival と同じものを読む。
    */
   rangeWatchlist(now = this.now(), limit = 200): RangeWatch[] {
+    return this.rangeWatchlistDetailed(now, limit).list;
+  }
+
+  rangeWatchlistDetailed(now = this.now(), limit = 200): { list: RangeWatch[]; excludedScam: number; excludedLiq: number } {
     const out: RangeWatch[] = [];
+    let excludedScam = 0;
+    let excludedLiq = 0;
     for (const row of this.store.listRangeCandidates(this.cfg.reigniteMinPeakMcUsd, limit)) {
       const range = this.mcRangeOf(row.pair_address, now);
       if (!range) continue;
@@ -356,6 +413,14 @@ export class Engine {
       if (currentMc === null || currentMc <= 0) continue;
       // 死んだ銘柄の平坦な線は帯ではない。detectRevival の再点火も同じ下限を読む
       if (currentMc < this.cfg.rangeMinMcUsd) continue;
+
+      // 流動性を抜かれた銘柄・機械的に回されている銘柄は、帯を組んでいても一覧に出さない
+      const gate = this.rangeGate(row, now);
+      if (gate.blocked) {
+        if (!gate.liqOk) excludedLiq++;
+        else excludedScam++;
+        continue;
+      }
 
       // detectRevival と同じ条件。ここだけ緩めると「一覧には出るのに鳴らない」が起きる
       const cooledRatio = row.peak_mc > 0 ? currentMc / row.peak_mc : null;
@@ -375,10 +440,11 @@ export class Engine {
         posInRangePct: range.high > range.low ? ((currentMc - range.low) / (range.high - range.low)) * 100 : 100,
         cooledRatio,
         primed,
+        scam: gate.scam,
       });
     }
     // 抜けそうな順。待っているものを上に出す
-    return out.sort((a, b) => a.toBreakoutPct - b.toBreakoutPct);
+    return { list: out.sort((a, b) => a.toBreakoutPct - b.toBreakoutPct), excludedScam, excludedLiq };
   }
 
   /**
@@ -472,7 +538,7 @@ export class Engine {
 
     // 作られた出来高で釣る銘柄を落とす。検知そのものは残し、通知だけを止める
     // （履歴に残しておかないと、フィルタが効きすぎていても利用者が気づけない）。
-    const scam = assessScam(p, this.cfg, now);
+    const scam = assessScam(p, this.cfg, now, this.scamHistory(p.pairAddress, now));
     const blocked = this.cfg.scamFilterEnabled && scam.score >= this.cfg.scamScoreThreshold;
 
     // 同時に立った場合は復活を優先する。
@@ -649,6 +715,7 @@ export class Engine {
     const inCandidates = peakOk || row.manual === 1;
     const currentMc = this.store.latestMc(row.pair_address);
     const mcOk = currentMc !== null && currentMc >= this.cfg.rangeMinMcUsd;
+    const gate = this.rangeGate(row, now);
     const cooledRatio = currentMc !== null && row.peak_mc > 0 ? currentMc / row.peak_mc : null;
     const cooled = cooledRatio !== null && cooledRatio <= this.cfg.reigniteCooledRatio;
 
@@ -678,13 +745,15 @@ export class Engine {
       inCandidates,
       currentMc,
       mcOk,
+      liqOk: gate.liqOk,
+      scam: gate.scam,
       cooledRatio,
       cooled,
       range,
       windows,
       triggerMc,
       toBreakoutPct: triggerMc !== null && currentMc !== null && currentMc > 0 ? (triggerMc / currentMc - 1) * 100 : null,
-      primed: inCandidates && peakOk && mcOk && cooled && range !== null,
+      primed: inCandidates && peakOk && mcOk && !gate.blocked && cooled && range !== null,
     };
   }
 
@@ -750,7 +819,7 @@ export class Engine {
     // 同じトークンに複数プールがあるときは、いちばん流動性の厚いものを代表にする
     const pair = pairs.sort((a, b) => liquidityUsd(b) - liquidityUsd(a))[0];
     if (!pair) return null;
-    return { pair, scam: assessScam(pair, this.cfg, this.now()) };
+    return { pair, scam: assessScam(pair, this.cfg, this.now(), this.scamHistory(pair.pairAddress, this.now())) };
   }
 
   /** 手動監視追加（ペアアドレス or トークンアドレス） */

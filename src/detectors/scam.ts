@@ -105,7 +105,13 @@ export function assessBreadth(pair: DexPair, cfg: Config, minTxns?: number): Bre
  * 出来高は人為的に膨らませられるが、流動性と時価総額は同じようには膨らませられないので、
  * その比が乖離しているほど、取引が実需でない可能性が高い。
  */
-export function assessScam(pair: DexPair, cfg: Config, now: number): ScamAssessment {
+/** スナップショットの履歴から分かること。API の現在値だけでは見えない */
+export interface ScamHistory {
+  /** 1h 出来高の時間ごとの平均の散らばり（store.hourlyVolumeCv） */
+  volCv?: { hours: number; mean: number; cv: number } | null;
+}
+
+export function assessScam(pair: DexPair, cfg: Config, now: number, history: ScamHistory = {}): ScamAssessment {
   const signals: ScamSignal[] = [];
   const liq = liquidityUsd(pair);
   const volH1 = vol(pair, "h1");
@@ -183,6 +189,21 @@ export function assessScam(pair: DexPair, cfg: Config, now: number): ScamAssessm
   // ⑦ ローンチ直後に出来高が湧いている＝同一ブロックで買いを固めるバンドルの典型。
   if (!breadth.organic && ageMs !== null && ageMs < 60 * MINUTE_MS && liq > 0 && volH1 >= liq * 3) {
     add("instant_volume", 15, `ローンチ ${Math.round(ageMs / MINUTE_MS)} 分で流動性の ${(volH1 / liq).toFixed(1)} 倍の出来高（バンドルの疑い）`);
+  }
+
+  // ⑧ 出来高が何時間もほぼ一定。
+  // 本物の市場は出来高が波打つ。ボットが一定の玉を回して価格を固定していると、
+  // 1 時間ごとの出来高が判で押したように揃う。利用者が /ranges で見た「一定のボリュームで
+  // 価格がずっと操作されてる」がこれ。出来高が流動性に対して小さいなら静かなだけなので除く。
+  // プールが毎時間まるごと入れ替わる量が、何時間も揺れない。これは単独で作り物と断じてよい。
+  const vc = history.volCv;
+  if (vc && vc.hours >= cfg.scamSteadyMinHours && liq > 0 && vc.mean >= liq * cfg.scamSteadyMinChurn && vc.cv <= cfg.scamSteadyCv) {
+    const heavy = vc.mean >= liq;
+    add(
+      "steady_wash",
+      heavy ? 50 : 30,
+      `出来高が ${vc.hours} 時間ほぼ一定（ばらつき ${(vc.cv * 100).toFixed(0)}%${heavy ? "、毎時プール相当" : ""}、機械的な回しの疑い）`,
+    );
   }
 
   const score = Math.min(100, signals.reduce((n, s) => n + s.points, 0));
