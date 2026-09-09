@@ -41,6 +41,15 @@ export type HarvestTokenResult =
   | { ok: false; reason: string }
   | { ok: true; pair: PairRow; alert: AlertRow; hours: number; result: HarvestResult; tagged: number; buyers: EarlyBuyer[] };
 
+interface RangeGate {
+  snap: SnapshotRow | null;
+  liqOk: boolean;
+  idleMs: number | null;
+  idleOk: boolean;
+  scam: ScamAssessment | null;
+  blocked: boolean;
+}
+
 export interface RangeWindowCheck {
   hours: number;
   ok: boolean;
@@ -59,6 +68,10 @@ export interface RangeDiagnosis {
   mcOk: boolean;
   /** いまの流動性が通知の下限以上か（抜かれていないか） */
   liqOk: boolean;
+  /** 取引が途絶えてからの時間（観測ベース）。null は取引の記録なし */
+  idleMs: number | null;
+  /** 途絶えが RANGE_MAX_IDLE_HOURS 未満か */
+  idleOk: boolean;
   /** いまの状態でのスキャム判定 */
   scam: ScamAssessment | null;
   cooledRatio: number | null;
@@ -381,13 +394,17 @@ export class Engine {
    * 利用者が /ranges で見た行の大半が、流動性を抜かれた銘柄と、一定の出来高で価格を
    * 固定された銘柄だった。判定は通知の瞬間にしか走っていなかったので、一覧には素通りしていた。
    */
-  private rangeGate(row: PairRow, now: number): { snap: SnapshotRow | null; liqOk: boolean; scam: ScamAssessment | null; blocked: boolean } {
+  private rangeGate(row: PairRow, now: number): RangeGate {
     const snap = this.store.latestSnapshot(row.pair_address);
-    if (!snap) return { snap: null, liqOk: false, scam: null, blocked: true };
+    if (!snap) return { snap: null, liqOk: false, idleMs: null, idleOk: false, scam: null, blocked: true };
     const liqOk = snap.liquidity_usd >= this.cfg.minLiquidityUsd;
+    // 取引が途絶えた銘柄の平坦な線は帯ではない（$PUMPED: 09:00 に売り抜けて以降ずっと無取引）
+    const lastTrade = this.store.lastTradeSnapshotTs(row.pair_address);
+    const idleMs = lastTrade === null ? null : now - lastTrade;
+    const idleOk = idleMs !== null && idleMs < this.cfg.rangeMaxIdleHours * HOUR_MS;
     const scam = assessScam(this.snapshotAsPair(row, snap), this.cfg, now, this.scamHistory(row.pair_address, now));
-    const blocked = !liqOk || (this.cfg.scamFilterEnabled && scam.score >= this.cfg.scamScoreThreshold);
-    return { snap, liqOk, scam, blocked };
+    const blocked = !liqOk || !idleOk || (this.cfg.scamFilterEnabled && scam.score >= this.cfg.scamScoreThreshold);
+    return { snap, liqOk, idleMs, idleOk, scam, blocked };
   }
 
   /**
@@ -402,10 +419,11 @@ export class Engine {
     return this.rangeWatchlistDetailed(now, limit).list;
   }
 
-  rangeWatchlistDetailed(now = this.now(), limit = 200): { list: RangeWatch[]; excludedScam: number; excludedLiq: number } {
+  rangeWatchlistDetailed(now = this.now(), limit = 200): { list: RangeWatch[]; excludedScam: number; excludedLiq: number; excludedIdle: number } {
     const out: RangeWatch[] = [];
     let excludedScam = 0;
     let excludedLiq = 0;
+    let excludedIdle = 0;
     for (const row of this.store.listRangeCandidates(this.cfg.reigniteMinPeakMcUsd, limit)) {
       const range = this.mcRangeOf(row.pair_address, now);
       if (!range) continue;
@@ -418,6 +436,7 @@ export class Engine {
       const gate = this.rangeGate(row, now);
       if (gate.blocked) {
         if (!gate.liqOk) excludedLiq++;
+        else if (!gate.idleOk) excludedIdle++;
         else excludedScam++;
         continue;
       }
@@ -444,7 +463,7 @@ export class Engine {
       });
     }
     // 抜けそうな順。待っているものを上に出す
-    return { list: out.sort((a, b) => a.toBreakoutPct - b.toBreakoutPct), excludedScam, excludedLiq };
+    return { list: out.sort((a, b) => a.toBreakoutPct - b.toBreakoutPct), excludedScam, excludedLiq, excludedIdle };
   }
 
   /**
@@ -746,6 +765,8 @@ export class Engine {
       currentMc,
       mcOk,
       liqOk: gate.liqOk,
+      idleMs: gate.idleMs,
+      idleOk: gate.idleOk,
       scam: gate.scam,
       cooledRatio,
       cooled,

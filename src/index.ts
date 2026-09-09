@@ -217,6 +217,9 @@ async function main(): Promise<void> {
               lines.push(`❌ いまの時価総額が ${fmtUsd(cfg.rangeMinMcUsd)} 未満 → 死んだ銘柄として監視から外す（動きがあれば急変レーンが拾う）`);
             }
             if (!d.liqOk) lines.push(`❌ いまの流動性が通知の下限 ${fmtUsd(cfg.minLiquidityUsd)} 未満 → 抜かれている`);
+            if (d.idleMs === null) lines.push("❌ 取引があった記録がない");
+            else if (!d.idleOk) lines.push(`❌ 取引が ${fmtAge(d.idleMs)} 以上途絶えている（${cfg.rangeMaxIdleHours}h で監視から外す）`);
+            else lines.push(`取引 ${fmtAge(d.idleMs)} 前まであり ✅`);
             if (d.scam) {
               const bad = cfg.scamFilterEnabled && d.scam.score >= cfg.scamScoreThreshold;
               lines.push(`リスク ${d.scam.score}/100 ${bad ? "❌ しきい値以上 → 一覧から除外" : "✅"}`);
@@ -236,15 +239,16 @@ async function main(): Promise<void> {
             else if (!d.inCandidates) lines.push(`❌ 監視に入っていません。全盛期が門に届いていないため。門を下げるなら .env の REIGNITE_MIN_PEAK_MC_USD`);
             else if (!d.mcOk) lines.push(`❌ 監視から外しています。いまの時価総額が小さすぎるため（RANGE_MIN_MC_USD）`);
             else if (!d.liqOk) lines.push(`❌ 監視から外しています。流動性が抜かれているため`);
+            else if (!d.idleOk) lines.push(`❌ 監視から外しています。取引が途絶えているため（戻れば自動で復帰）`);
             else if (d.scam && cfg.scamFilterEnabled && d.scam.score >= cfg.scamScoreThreshold) lines.push(`❌ 監視から外しています。作られた出来高の疑い（上のリスク内訳）。判定を緩めるなら SCAM_SCORE_THRESHOLD`);
             else if (!d.cooled) lines.push("⏸ 母集団には入っているが、まだ冷えていないので再点火の対象外");
             else lines.push("⏸ 母集団には入っているが、帯が成立していない。上の窓ごとの理由を参照（RANGE_MIN_HOURS / RANGE_MIN_SAMPLES / RANGE_MAX_WIDTH_PCT）");
             return lines.join("\n");
           }
           const n = Math.min(30, Number(args[0]) || 15);
-          const { list: all, excludedScam, excludedLiq } = engine.rangeWatchlistDetailed();
-          const excluded = excludedScam + excludedLiq;
-          const excludedNote = excluded > 0 ? `\n🚫 帯は組んでいるが除外: ${excluded} 件（流動性抜き ${excludedLiq} / 作られた出来高 ${excludedScam}）` : "";
+          const { list: all, excludedScam, excludedLiq, excludedIdle } = engine.rangeWatchlistDetailed();
+          const excluded = excludedScam + excludedLiq + excludedIdle;
+          const excludedNote = excluded > 0 ? `\n🚫 帯は組んでいるが除外: ${excluded} 件（流動性抜き ${excludedLiq} / 取引停止 ${excludedIdle} / 作られた出来高 ${excludedScam}）` : "";
           if (all.length === 0) {
             return (
               "いまヨコヨコと判定できる銘柄はありません。\n" +

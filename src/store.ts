@@ -656,6 +656,18 @@ export class Store {
     return row?.t ?? null;
   }
 
+  /**
+   * 直近 1 時間に取引があった最後のスナップショット時刻。
+   * その時点の 1h 窓に取引が含まれるので、本当に取引が止まったのはここから最大 1 時間後。
+   * 「途絶えて N 時間」の判定は now - この値 ≥ N で見れば、実際の空白は N 時間以上と言える
+   */
+  lastTradeSnapshotTs(pairAddress: string): number | null {
+    const row = this.db
+      .prepare("SELECT MAX(ts) AS t FROM snapshots WHERE pair_address = ? AND buys_h1 + sells_h1 > 0")
+      .get(pairAddress.toLowerCase()) as { t: number | null } | undefined;
+    return row?.t ?? null;
+  }
+
   /** そのペアの最初のスナップショット時刻。観測履歴の長さを知るために使う */
   firstSnapshotAt(pairAddress: string): number | null {
     const row = this.db.prepare("SELECT MIN(ts) AS t FROM snapshots WHERE pair_address = ?").get(pairAddress.toLowerCase()) as

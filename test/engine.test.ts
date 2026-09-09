@@ -856,3 +856,79 @@ describe("Engine — /ranges にバンドルを並べない", () => {
     expect(a!.scam_reasons).toContain("ほぼ一定");
   });
 });
+
+describe("Engine — 取引が途絶えた銘柄をヨコヨコ監視から外す（RANGE_MAX_IDLE_HOURS）", () => {
+  /**
+   * 全盛期を通り、帯の条件も満たすが、取引が止まっている銘柄。
+   * @param idleHours 最後の取引からの時間。それ以降のスナップショットは buys/sells = 0
+   */
+  function seedIdle(store: Store, o: { symbol: string; liq: number; mc: number; idleHours: number }) {
+    const addr = `0xpair_${o.symbol.toLowerCase()}`;
+    const mk = (mc: number, active: boolean) => {
+      const p = makePair({
+        address: addr, token: `0xtok_${o.symbol.toLowerCase()}`, symbol: o.symbol, ageHours: 16, price: mc / 1e9, liq: o.liq,
+        volH1: active ? 3_000 : 0, volH24: 40_000, buysH1: active ? 18 : 0, sellsH1: active ? 14 : 0,
+      });
+      p.marketCap = mc;
+      p.fdv = mc;
+      return p;
+    };
+    store.upsertPair(mk(600_000, true), "test", NOW - 15 * H);
+    for (let t = 12 * H; t > 0; t -= 45_000) {
+      const active = t > o.idleHours * H;
+      store.insertSnapshot(mk(o.mc * (t % 90_000 === 0 ? 0.97 : 1.03), active), NOW - t);
+    }
+    return addr;
+  }
+
+  it("$PUMPED（流動性 $1.2K・取引停止）は一覧に出ない", () => {
+    const { store, engine } = setup();
+    seedIdle(store, { symbol: "PUMPED", liq: 1_200, mc: 68_100, idleHours: 4 });
+    const r = engine.rangeWatchlistDetailed(NOW);
+    expect(r.list).toHaveLength(0);
+    const d = engine.rangeDiagnosis("0xtok_pumped", NOW)!;
+    expect(d.liqOk).toBe(false);
+    expect(d.idleOk).toBe(false);
+    expect(d.primed).toBe(false);
+  });
+
+  it("流動性は十分でも、3 時間取引が無ければ外す", () => {
+    const { store, engine } = setup();
+    seedIdle(store, { symbol: "SLEEPY", liq: 40_000, mc: 120_000, idleHours: 4 });
+    const r = engine.rangeWatchlistDetailed(NOW);
+    expect(r.list).toHaveLength(0);
+    expect(r.excludedIdle).toBe(1);
+    expect(r.excludedLiq).toBe(0);
+    const d = engine.rangeDiagnosis("0xtok_sleepy", NOW)!;
+    expect(d.idleMs).toBeGreaterThanOrEqual(4 * H - 60_000);
+    expect(d.idleOk).toBe(false);
+  });
+
+  it("取引が続いていれば残り、止まっていた時間が短ければ残る", () => {
+    const { store, engine } = setup();
+    seedIdle(store, { symbol: "AWAKE", liq: 40_000, mc: 120_000, idleHours: 0 });
+    seedIdle(store, { symbol: "NAP", liq: 40_000, mc: 120_000, idleHours: 1.5 });
+    const r = engine.rangeWatchlistDetailed(NOW);
+    expect(r.list.map((w) => w.row.base_symbol).sort()).toEqual(["AWAKE", "NAP"]);
+    expect(r.excludedIdle).toBe(0);
+  });
+
+  it("目を覚ませば（取引が戻れば）自動で一覧に戻る", () => {
+    const { store, engine } = setup();
+    const addr = seedIdle(store, { symbol: "WAKE", liq: 40_000, mc: 120_000, idleHours: 4 });
+    expect(engine.rangeWatchlistDetailed(NOW).list).toHaveLength(0);
+    const p = makePair({ address: addr, token: "0xtok_wake", symbol: "WAKE", ageHours: 16, price: 0.00012, liq: 40_000, volH1: 5_000, volH24: 40_000, buysH1: 20, sellsH1: 15 });
+    p.marketCap = 120_000;
+    p.fdv = 120_000;
+    store.insertSnapshot(p, NOW - 30_000);
+    expect(engine.rangeWatchlistDetailed(NOW).list.map((w) => w.row.base_symbol)).toEqual(["WAKE"]);
+  });
+
+  it("しきい値は設定で動かせる", () => {
+    const cfgLoose = makeConfig({ DISCOVERY_SEARCH_QUERIES: "x", DISCOVERY_USE_PROFILES: "false", RANGE_MAX_IDLE_HOURS: "6" });
+    const store = new Store(":memory:");
+    const engine = new Engine(cfgLoose, store, {} as unknown as DexScreenerClient, { broadcast: async () => {} }, null, () => NOW);
+    seedIdle(store, { symbol: "SLEEPY", liq: 40_000, mc: 120_000, idleHours: 4 });
+    expect(engine.rangeWatchlistDetailed(NOW).list).toHaveLength(1);
+  });
+});

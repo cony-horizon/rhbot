@@ -70,6 +70,7 @@ export interface Config {
   rangeMaxWidthPct: number;
   rangeMinSamples: number;
   rangeMinMcUsd: number;
+  rangeMaxIdleHours: number;
   priorityPeakMcUsd: number;
   priorityPollIntervalSec: number;
   revivalCooldownMin: number;
@@ -284,6 +285,10 @@ export function buildConfig(env: Env, strict = true): Config {
     // 全盛期の門は「過去に大きかったか」しか見ないので、$8K まで死んだ銘柄の平坦な線も帯に見えてしまう。
     // そういう銘柄に何かあれば急変レーンが拾う
     rangeMinMcUsd: num(env, "RANGE_MIN_MC_USD", 30_000),
+    // 取引がこの時間以上途絶えている銘柄はヨコヨコ監視から外す。
+    // 帯は「値が一定の幅に収まったまま取引が続いている」状態で、無取引の平坦な線は帯ではない。
+    // 目を覚ませば（取引が戻れば）自動で一覧に戻る
+    rangeMaxIdleHours: num(env, "RANGE_MAX_IDLE_HOURS", 3),
     priorityPeakMcUsd: num(env, "PRIORITY_PEAK_MC_USD", 300_000),
     priorityPollIntervalSec: num(env, "PRIORITY_POLL_INTERVAL_SEC", 45),
     revivalCooldownMin: num(env, "REVIVAL_COOLDOWN_MIN", 180),
