@@ -218,7 +218,9 @@ describe("buildDailyReport — 反省の材料", () => {
     seed(store, { symbol: "X3", trigger: "reignite", ts: base + 2 * M, path: [[0, 1], [60, 1.2], [240, 1.1]] });
     computeOutcomes(store, cfg, NOW);
     const { text } = buildDailyReport(store, cfg, NOW);
-    const line = text.split("\n").find((l) => l.includes("♻️ 再点火") && l.includes("件"))!;
+    const ls = text.split("\n");
+    const i = ls.findIndex((l) => l.includes("♻️ 再点火") && l.includes("件"));
+    const line = ls[i + 1]!; // 中央値は次の行
     expect(line).toContain("中央値: 最大 +20");
     expect(line).not.toContain("+13");
     store.close();
@@ -332,6 +334,78 @@ describe("低MC レーンの成績を切り分ける", () => {
     expect(lowLine).toContain("100%");
     const newLine = text.split("\n").find((l) => l.includes("🚀 新規") && l.includes("件"))!;
     expect(newLine).toContain("33%");
+    store.close();
+  });
+});
+
+
+describe("ラグを勝ちに数えない", () => {
+  function day(): Store {
+    const store = new Store(":memory:");
+    const base = NOW - 12 * H;
+    // 新規 4 件: 2 件は +30% の後ゼロ（ラグ）、1 件は本物の勝ち、1 件は外れ
+    seed(store, { symbol: "RUG1", trigger: "new", kind: "new_launch", ts: base, path: [[0, 1], [30, 2.5], [120, 19.5], [240, 0.001], [600, 0.001]] });
+    seed(store, { symbol: "RUG2", trigger: "new", kind: "new_launch", ts: base + M, path: [[0, 1], [60, 15], [90, 0.001], [240, 0.001]] });
+    seed(store, { symbol: "WIN", trigger: "new", kind: "new_launch", ts: base + 2 * M, path: [[0, 1], [60, 1.5], [240, 1.4], [600, 1.3]] });
+    seed(store, { symbol: "MISS", trigger: "new", kind: "new_launch", ts: base + 3 * M, path: [[0, 1], [60, 1.1], [240, 0.8], [600, 0.7]] });
+    // 止めた 2 件: 1 件は +30% の後ラグ（止めて正解）、1 件は本物の勝ち（止めて損）
+    seed(store, { symbol: "BRUG", trigger: "new", kind: "new_launch", suppressed: 1, score: 55, ts: base + 4 * M, path: [[0, 1], [60, 24], [90, 0.002], [240, 0.002]] });
+    seed(store, { symbol: "BWIN", trigger: "new", kind: "new_launch", suppressed: 1, score: 55, ts: base + 5 * M, path: [[0, 1], [60, 1.6], [240, 1.5], [600, 1.5]] });
+    computeOutcomes(store, cfg, NOW);
+    return store;
+  }
+
+  it("rug は 24h 内の最大下落で決まる", () => {
+    const store = day();
+    const rows = store.listAlertsWithOutcomes(NOW - 24 * H, NOW);
+    const by = (sym: string) => rows.find((r) => r.symbol === sym)!;
+    expect(by("RUG1").hit).toBe(1);
+    expect(by("RUG1").rug).toBe(1);
+    expect(by("WIN").hit).toBe(1);
+    expect(by("WIN").rug).toBe(0);
+    expect(by("MISS").rug).toBe(0);
+    store.close();
+  });
+
+  it("的中と実質を分けて出す。良かったコールにラグは載らない", () => {
+    const store = day();
+    const { text, stats } = buildDailyReport(store, cfg, NOW);
+    // 新規 4 件: 的中 3（RUG1, RUG2, WIN）→ 実質 1（WIN）
+    expect(text).toContain("的中 75% → <b>実質 25%</b>（ラグ率 50%）");
+    expect(stats.hits).toBe(1);
+    const good = text.split("良かったコール")[1]!.split("\n\n")[0]!;
+    expect(good).toContain("$WIN");
+    expect(good).not.toContain("$RUG1");
+    expect(good).not.toContain("$RUG2");
+    // 悪かった側にはラグが 💀 付きで出る
+    const bad = text.split("悪かったコール")[1]!.split("\n\n")[0]!;
+    expect(bad).toContain("💀ラグ");
+    store.close();
+  });
+
+  it("止めた側でも、+30% の後ラグったものは『伸びた』に数えない", () => {
+    const store = day();
+    const { text } = buildDailyReport(store, cfg, NOW);
+    expect(text).toContain("止めたが伸びた銘柄</b>（実質 1/2 件。他に 1 件は +30% の後ラグ＝止めて正解）");
+    const missed = text.split("止めたが伸びた銘柄")[1]!.split("しきい値")[0]!;
+    expect(missed).toContain("$BWIN");
+    expect(missed).not.toContain("$BRUG");
+    // しきい値の試算も実質で数える: 60 で 2 件通り、実質の的中は 1
+    expect(text).toContain("60 → +2件 通る、うち的中 1件（50%）");
+    store.close();
+  });
+
+  it("スマートウォレットの自動収穫は、ラグでない的中を 24h 確定後にだけ拾う", () => {
+    const store = new Store(":memory:");
+    const base = NOW - 30 * H;
+    const rug = seed(store, { symbol: "HRUG", trigger: "fast", ts: base, path: [[0, 1], [60, 3], [120, 0.001], [1500, 0.001]] });
+    const win = seed(store, { symbol: "HWIN", trigger: "fast", ts: base + M, path: [[0, 1], [60, 1.6], [240, 1.8], [1500, 1.7]] });
+    const young = seed(store, { symbol: "HYOUNG", trigger: "fast", ts: NOW - 6 * H, path: [[0, 1], [60, 1.6], [240, 1.8]] });
+    computeOutcomes(store, cfg, NOW);
+    const ids = store.listAlertsToHarvest(10).map((a) => a.id);
+    expect(ids).toContain(win.id);
+    expect(ids).not.toContain(rug.id); // ラグの先回りは仕掛け人。台帳を汚す
+    expect(ids).not.toContain(young.id); // まだ 24h 経っておらず、ラグかどうか分からない
     store.close();
   });
 });

@@ -107,6 +107,7 @@ export interface Config {
   outcomeMinLiquidityUsd: number;
   outcomeHitWindowHours: number;
   outcomeBustPct: number;
+  outcomeRugPct: number;
   /** 日次レポート */
   reportEnabled: boolean;
   reportHourJst: number;
@@ -329,6 +330,8 @@ export function buildConfig(env: Env, strict = true): Config {
     outcomeMinLiquidityUsd: num(env, "OUTCOME_MIN_LIQUIDITY_USD", 5_000),
     outcomeHitWindowHours: num(env, "OUTCOME_HIT_WINDOW_HOURS", 4),
     outcomeBustPct: num(env, "OUTCOME_BUST_PCT", 50),
+    // 24h 内にここまで落ちたらラグ扱い。+30% を付けてからゼロになった銘柄を「的中」に数えないため
+    outcomeRugPct: num(env, "OUTCOME_RUG_PCT", 90),
     reportEnabled: bool(env, "REPORT_ENABLED", true),
     reportHourJst: num(env, "REPORT_HOUR_JST", 9),
     reportMinSamples: num(env, "REPORT_MIN_SAMPLES", 4),

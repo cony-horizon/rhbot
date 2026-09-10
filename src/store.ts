@@ -95,6 +95,8 @@ export interface OutcomeRow {
   /** 4h 以内に HIT_PCT 以上 → 1、届かず → 0、未確定 → null */
   hit: number | null;
   bust: number | null;
+  /** 24h 内に RUG_PCT 以上落ちた → 1。的中していてもラグなら勝ちではない */
+  rug: number | null;
 }
 
 export interface WalletRow {
@@ -237,7 +239,7 @@ CREATE TABLE IF NOT EXISTS alert_outcomes (
   p15m REAL, p1h REAL, p4h REAL, p24h REAL,
   max_gain_pct REAL, max_gain_at INTEGER, max_dd_pct REAL,
   done_until INTEGER NOT NULL DEFAULT 0,
-  hit INTEGER, bust INTEGER
+  hit INTEGER, bust INTEGER, rug INTEGER
 );
 CREATE TABLE IF NOT EXISTS daily_reports (
   date TEXT PRIMARY KEY,
@@ -339,6 +341,11 @@ export class Store {
       (this.db.prepare("PRAGMA table_info(snapshots)").all() as unknown as { name: string }[]).map((c) => c.name),
     );
     if (!snapCols.has("market_cap")) this.db.exec("ALTER TABLE snapshots ADD COLUMN market_cap REAL NOT NULL DEFAULT 0");
+
+    const outcomeCols = new Set(
+      (this.db.prepare("PRAGMA table_info(alert_outcomes)").all() as unknown as { name: string }[]).map((c) => c.name),
+    );
+    if (!outcomeCols.has("rug")) this.db.exec("ALTER TABLE alert_outcomes ADD COLUMN rug INTEGER");
 
     const walletCols = new Set(
       (this.db.prepare("PRAGMA table_info(wallets)").all() as unknown as { name: string }[]).map((c) => c.name),
@@ -856,14 +863,14 @@ export class Store {
   upsertOutcome(o: OutcomeRow): void {
     this.db
       .prepare(
-        `INSERT INTO alert_outcomes(alert_id, alert_ts, base_price, p15m, p1h, p4h, p24h, max_gain_pct, max_gain_at, max_dd_pct, done_until, hit, bust)
-         VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        `INSERT INTO alert_outcomes(alert_id, alert_ts, base_price, p15m, p1h, p4h, p24h, max_gain_pct, max_gain_at, max_dd_pct, done_until, hit, bust, rug)
+         VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
          ON CONFLICT(alert_id) DO UPDATE SET
            p15m = excluded.p15m, p1h = excluded.p1h, p4h = excluded.p4h, p24h = excluded.p24h,
            max_gain_pct = excluded.max_gain_pct, max_gain_at = excluded.max_gain_at, max_dd_pct = excluded.max_dd_pct,
-           done_until = excluded.done_until, hit = excluded.hit, bust = excluded.bust`,
+           done_until = excluded.done_until, hit = excluded.hit, bust = excluded.bust, rug = excluded.rug`,
       )
-      .run(o.alert_id, o.alert_ts, o.base_price, o.p15m, o.p1h, o.p4h, o.p24h, o.max_gain_pct, o.max_gain_at, o.max_dd_pct, o.done_until, o.hit, o.bust);
+      .run(o.alert_id, o.alert_ts, o.base_price, o.p15m, o.p1h, o.p4h, o.p24h, o.max_gain_pct, o.max_gain_at, o.max_dd_pct, o.done_until, o.hit, o.bust, o.rug);
   }
 
   getOutcome(alertId: number): OutcomeRow | null {
@@ -874,7 +881,7 @@ export class Store {
   listAlertsWithOutcomes(fromTs: number, toTs: number): (AlertRow & Partial<OutcomeRow>)[] {
     return this.db
       .prepare(
-        `SELECT a.*, o.base_price, o.p15m, o.p1h, o.p4h, o.p24h, o.max_gain_pct, o.max_gain_at, o.max_dd_pct, o.done_until, o.hit, o.bust
+        `SELECT a.*, o.base_price, o.p15m, o.p1h, o.p4h, o.p24h, o.max_gain_pct, o.max_gain_at, o.max_dd_pct, o.done_until, o.hit, o.bust, o.rug
          FROM alerts a LEFT JOIN alert_outcomes o ON o.alert_id = a.id
          WHERE a.ts >= ? AND a.ts < ? ORDER BY a.ts ASC`,
       )
@@ -907,7 +914,7 @@ export class Store {
         `SELECT a.*, o.hit AS hit FROM alerts a
          JOIN alert_outcomes o ON o.alert_id = a.id
          LEFT JOIN harvests h ON h.alert_id = a.id
-         WHERE a.kind = 'revival' AND o.hit = 1 AND h.alert_id IS NULL
+         WHERE a.kind = 'revival' AND o.hit = 1 AND COALESCE(o.rug, 0) = 0 AND o.done_until >= 86400000 AND h.alert_id IS NULL
          ORDER BY a.ts DESC LIMIT ?`,
       )
       .all(limit) as unknown as (AlertRow & { hit: number })[];

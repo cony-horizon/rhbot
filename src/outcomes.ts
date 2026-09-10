@@ -36,6 +36,7 @@ export function computeOutcomes(store: Store, cfg: Config, now: number): number 
       done_until: 0,
       hit: null,
       bust: null,
+      rug: null,
     };
 
     const minLiq = cfg.outcomeMinLiquidityUsd;
@@ -60,6 +61,8 @@ export function computeOutcomes(store: Store, cfg: Config, now: number): number 
       }
       // 入口からの下落幅なので 0 が上限。上がりっぱなしの銘柄で「DD +300%」と出ないように
       o.max_dd_pct = Math.min(0, (ext.min / base - 1) * 100);
+      // +30% を付けてからゼロになった銘柄は「的中」ではあってもラグ。別に持つ
+      o.rug = o.max_dd_pct <= -cfg.outcomeRugPct ? 1 : 0;
     }
 
     // 的中判定は猶予時間内の最高値で決める
@@ -86,6 +89,14 @@ export function computeOutcomes(store: Store, cfg: Config, now: number): number 
 /* ------------------------------------------------------------------ */
 
 export type Judged = AlertRow & Partial<OutcomeRow>;
+
+/** +30% を付けたが、その後ラグった銘柄は勝ちに数えない */
+export function isCleanHit(j: Judged): boolean {
+  return j.hit === 1 && j.rug !== 1;
+}
+export function isRug(j: Judged): boolean {
+  return j.rug === 1;
+}
 
 export interface ReportStats {
   from: number;
@@ -171,7 +182,7 @@ export function thresholdTradeoff(
     // 前の段と同じ集合なら根拠が増えていない。並べると「80 まで上げられる」と読めてしまう
     if (admitted.length === 0 || admitted.length === prevAdmitted) continue;
     prevAdmitted = admitted.length;
-    const hits = admitted.filter((j) => j.hit === 1).length;
+    const hits = admitted.filter(isCleanHit).length;
     const rate = hits / admitted.length;
     out.push({ threshold: t, admitted: admitted.length, hits, rate, dilutes: sentHitRate !== null && rate < sentHitRate });
   }
@@ -234,13 +245,14 @@ interface Insight {
 
 function insights(judged: Judged[], cfg: Config): Insight[] {
   const groups = new Map<string, { attr: Attr; n: number; hits: number }>();
-  const totalHits = judged.filter((j) => j.hit === 1).length;
+  // ラグを勝ちに数えると「買い偏重の新規は的中 79%」のような逆の結論が出る。ここは実質の勝ちで見る
+  const totalHits = judged.filter(isCleanHit).length;
   for (const j of judged) {
     for (const at of attributes(j, cfg)) {
       const key = `${at.name}|${at.bucket}`;
       const g = groups.get(key) ?? { attr: at, n: 0, hits: 0 };
       g.n++;
-      if (j.hit === 1) g.hits++;
+      if (isCleanHit(j)) g.hits++;
       groups.set(key, g);
     }
   }
@@ -292,6 +304,7 @@ function describeCall(j: Judged): string {
     mg !== null ? `最大 ${fmtPct(mg)}${when ? `（${when}）` : ""}` : "",
     p4 !== null ? `4h ${fmtPct(p4)}` : "",
     dd !== null && dd <= -30 ? `最大DD ${fmtPct(dd)}` : "",
+    isRug(j) ? "💀ラグ" : "",
   ].filter(Boolean);
   return parts.join(" ｜ ");
 }
@@ -309,7 +322,9 @@ export function buildDailyReport(store: Store, cfg: Config, now: number): { text
   const judged = all.filter((a) => a.hit === 0 || a.hit === 1);
   const sent = judged.filter((a) => a.suppressed === 0);
   const blocked = judged.filter((a) => a.suppressed === 1);
-  const hits = sent.filter((a) => a.hit === 1).length;
+  const rawHits = sent.filter((a) => a.hit === 1).length;
+  const hits = sent.filter(isCleanHit).length;
+  const rugs = sent.filter(isRug).length;
   const stats: ReportStats = {
     from,
     to,
@@ -324,7 +339,8 @@ export function buildDailyReport(store: Store, cfg: Config, now: number): { text
   const lines: string[] = [
     `📊 <b>日次レポート ${label}</b>`,
     `対象: ${jst(from).label} ${jst(from).hour}時 〜 ${jst(to).label} ${jst(to).hour}時 の通知（結果確定分）`,
-    `通知 ${stats.judged} 件 ｜ 止めた ${blocked.length} 件 ｜ 的中 = ${cfg.outcomeHitWindowHours}h 以内に +${cfg.outcomeHitPct}%`,
+    `通知 ${stats.judged} 件 ｜ 止めた ${blocked.length} 件`,
+    `的中 = ${cfg.outcomeHitWindowHours}h 以内に +${cfg.outcomeHitPct}% ｜ ラグ = 24h 内に -${cfg.outcomeRugPct}% ｜ <b>実質</b> = 的中かつラグでない`,
     "",
   ];
 
@@ -341,19 +357,26 @@ export function buildDailyReport(store: Store, cfg: Config, now: number): { text
     byTrigger.set(k, [...(byTrigger.get(k) ?? []), a]);
   }
   for (const [k, list] of [...byTrigger.entries()].sort((a, b) => b[1].length - a[1].length)) {
-    const h = list.filter((a) => a.hit === 1).length;
+    const raw = list.filter((a) => a.hit === 1).length;
+    const clean = list.filter(isCleanHit).length;
+    const rg = list.filter(isRug).length;
     const mg = median(list.map((a) => a.max_gain_pct ?? 0));
     const p4 = median(list.filter((a) => a.p4h !== null && a.p4h !== undefined).map((a) => a.p4h as number));
     const dd = median(list.map((a) => a.max_dd_pct ?? 0));
     lines.push(
-      `${(TRIGGER_LABEL[k] ?? k).padEnd(10)} ${String(list.length).padStart(2)}件  的中 ${rate(h, list.length).padStart(4)}  中央値: 最大 ${fmtPct(mg)} / 4h後 ${fmtPct(p4)} / DD ${fmtPct(dd)}`,
+      `${(TRIGGER_LABEL[k] ?? k).padEnd(10)} ${String(list.length).padStart(2)}件  的中 ${rate(raw, list.length)} → <b>実質 ${rate(clean, list.length)}</b>${rg > 0 ? `（ラグ率 ${rate(rg, list.length)}）` : ""}`,
+      `　中央値: 最大 ${fmtPct(mg)} / 4h後 ${fmtPct(p4)} / DD ${fmtPct(dd)}`,
     );
   }
   // 主軸の再点火が一度も鳴っていないなら、それ自体が報告すべき事実
   if (cfg.reigniteEnabled && !byTrigger.has("reignite")) {
     lines.push(`${TRIGGER_LABEL.reignite!.padEnd(10)}  0件  — 待機中の銘柄は /ranges で確認`);
   }
-  lines.push("", `合計 的中率 <b>${rate(hits, sent.length)}</b>（${hits}/${sent.length}）`, `（最大＝24h 内の最高値。4h後＝通知から 4 時間後にただ持っていた場合）`);
+  lines.push(
+    "",
+    `合計 的中 ${rate(rawHits, sent.length)} → <b>実質 ${rate(hits, sent.length)}</b>（${hits}/${sent.length}）${rugs > 0 ? ` ｜ ラグ ${rugs} 件` : ""}`,
+    `（最大＝24h 内の最高値。4h後＝通知から 4 時間後にただ持っていた場合）`,
+  );
 
   // 前日比
   const yesterday = store.getDailyReport(jst(now - 24 * HOUR_MS).date);
@@ -362,11 +385,13 @@ export function buildDailyReport(store: Store, cfg: Config, now: number): { text
   }
 
   // 良かった / 悪かった
+  // ラグった銘柄は「良かった」に入れない。+1851% の後に -100% は勝ちではないし、
+  // 同じ銘柄が良かった側と悪かった側の両方に並ぶことになる
   const ranked = uniqueByToken(
-    [...sent].filter((a) => a.max_gain_pct !== null && a.max_gain_pct !== undefined).sort((a, b) => (b.max_gain_pct ?? 0) - (a.max_gain_pct ?? 0)),
+    [...sent].filter((a) => a.max_gain_pct !== null && a.max_gain_pct !== undefined && !isRug(a)).sort((a, b) => (b.max_gain_pct ?? 0) - (a.max_gain_pct ?? 0)),
   );
   if (ranked.length > 0) {
-    lines.push("", "<b>🏆 良かったコール</b>");
+    lines.push("", "<b>🏆 良かったコール</b>（ラグ除く）");
     for (const j of ranked.slice(0, 3)) lines.push(`・${describeCall(j)}`);
     const worst = uniqueByToken([...sent].sort((a, b) => (a.p4h ?? a.max_gain_pct ?? 0) - (b.p4h ?? b.max_gain_pct ?? 0))).filter((j) => (j.p4h ?? j.max_gain_pct ?? 0) < 0).slice(0, 3);
     if (worst.length > 0) {
@@ -376,10 +401,12 @@ export function buildDailyReport(store: Store, cfg: Config, now: number): { text
   }
 
   // 止めた中の逸材（フィルタが厳しすぎる証拠）
-  const missed = uniqueByToken(blocked.filter((a) => a.hit === 1).sort((a, b) => (b.max_gain_pct ?? 0) - (a.max_gain_pct ?? 0)));
+  // 止めた側の「伸びた」からもラグを除く。+2346% の後に -99.8% は、止めて正解
+  const blockedRugHits = blocked.filter((a) => a.hit === 1 && isRug(a)).length;
+  const missed = uniqueByToken(blocked.filter(isCleanHit).sort((a, b) => (b.max_gain_pct ?? 0) - (a.max_gain_pct ?? 0)));
   if (missed.length > 0) {
-    const missedRaw = blocked.filter((a) => a.hit === 1).length;
-    lines.push("", `<b>🚫 止めたが伸びた銘柄</b>（${missedRaw}/${blocked.length} 件）`);
+    const missedRaw = blocked.filter(isCleanHit).length;
+    lines.push("", `<b>🚫 止めたが伸びた銘柄</b>（実質 ${missedRaw}/${blocked.length} 件${blockedRugHits > 0 ? `。他に ${blockedRugHits} 件は +${cfg.outcomeHitPct}% の後ラグ＝止めて正解` : ""}）`);
     for (const j of missed.slice(0, 3)) lines.push(`・${describeCall(j)} ｜ リスク ${j.scam_score}`);
     // 上げたら勝ちも負けも一緒に通る。その両方を見せる
     const trade = thresholdTradeoff(blocked, stats.hitRate, cfg.scamScoreThreshold);
@@ -396,7 +423,12 @@ export function buildDailyReport(store: Store, cfg: Config, now: number): { text
       );
     }
   } else if (blocked.length > 0) {
-    lines.push("", `🚫 止めた ${blocked.length} 件はいずれも伸びませんでした（フィルタは妥当）`);
+    lines.push(
+      "",
+      blockedRugHits > 0
+        ? `🚫 止めた ${blocked.length} 件のうち ${blockedRugHits} 件は +${cfg.outcomeHitPct}% の後ラグ、残りは伸びず（フィルタは妥当）`
+        : `🚫 止めた ${blocked.length} 件はいずれも伸びませんでした（フィルタは妥当）`,
+    );
   }
 
   // 傾向と改善案。通知したものだけで見る。
@@ -421,7 +453,7 @@ export function formatRecentOutcomes(store: Store, now: number, limit: number): 
   const lines = ["<b>直近の通知とその後</b>"];
   for (const j of rows) {
     const t = TRIGGER_LABEL[triggerOf(j)] ?? triggerOf(j);
-    const mark = j.hit === 1 ? "✅" : j.hit === 0 ? "❌" : "⏳";
+    const mark = isRug(j) ? "💀" : j.hit === 1 ? "✅" : j.hit === 0 ? "❌" : "⏳";
     const mg = j.max_gain_pct ?? null;
     lines.push(
       `${mark} <b>$${escapeHtml(j.symbol)}</b> ${t} ｜ 15m ${fmtPct(j.p15m ?? null)} ｜ 1h ${fmtPct(j.p1h ?? null)} ｜ 4h ${fmtPct(j.p4h ?? null)} ｜ 最大 ${fmtPct(mg)} ｜ MC ${fmtUsd(j.mc_usd)}`,
