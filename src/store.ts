@@ -285,7 +285,26 @@ CREATE TABLE IF NOT EXISTS pending_pairs (
   first_seen_at INTEGER NOT NULL,
   attempts INTEGER NOT NULL DEFAULT 0
 );
+CREATE TABLE IF NOT EXISTS blacklist (
+  token_address TEXT PRIMARY KEY,
+  symbol TEXT NOT NULL DEFAULT '',
+  ts INTEGER NOT NULL,
+  note TEXT NOT NULL DEFAULT '',
+  alert_score INTEGER,
+  alert_reasons TEXT NOT NULL DEFAULT ''
+);
 `;
+
+/** 利用者が「これはスキャム」と手動で指定した銘柄 */
+export interface BlacklistRow {
+  token_address: string;
+  symbol: string;
+  ts: number;
+  note: string;
+  /** 指定時点で、直近の通知にフィルタが付けていた点数。フィルタの見逃しを測る材料 */
+  alert_score: number | null;
+  alert_reasons: string;
+}
 
 export class Store {
   private readonly db: DatabaseSync;
@@ -355,6 +374,55 @@ export class Store {
 
   close(): void {
     this.db.close();
+  }
+
+  /* ---------- ブラックリスト ---------- */
+
+  addBlacklist(row: BlacklistRow): void {
+    this.db
+      .prepare(
+        `INSERT INTO blacklist(token_address, symbol, ts, note, alert_score, alert_reasons) VALUES(?, ?, ?, ?, ?, ?)
+         ON CONFLICT(token_address) DO UPDATE SET symbol = excluded.symbol, ts = excluded.ts, note = excluded.note,
+           alert_score = excluded.alert_score, alert_reasons = excluded.alert_reasons`,
+      )
+      .run(row.token_address.toLowerCase(), row.symbol, row.ts, row.note, row.alert_score, row.alert_reasons);
+  }
+
+  removeBlacklist(tokenAddress: string): boolean {
+    return Number(this.db.prepare("DELETE FROM blacklist WHERE token_address = ?").run(tokenAddress.toLowerCase()).changes) > 0;
+  }
+
+  isBlacklisted(tokenAddress: string): boolean {
+    return this.db.prepare("SELECT 1 FROM blacklist WHERE token_address = ?").get(tokenAddress.toLowerCase()) !== undefined;
+  }
+
+  listBlacklist(limit = 50): BlacklistRow[] {
+    return this.db.prepare("SELECT * FROM blacklist ORDER BY ts DESC LIMIT ?").all(limit) as unknown as BlacklistRow[];
+  }
+
+  listBlacklistedSince(sinceTs: number): BlacklistRow[] {
+    return this.db.prepare("SELECT * FROM blacklist WHERE ts >= ? ORDER BY ts DESC").all(sinceTs) as unknown as BlacklistRow[];
+  }
+
+  /** 直近の通知（止めたものも含む）。ブラックリスト登録時に、フィルタが何点を付けていたかを残すため */
+  latestAlertForToken(tokenAddress: string): AlertRow | null {
+    return (this.db.prepare("SELECT * FROM alerts WHERE token_address = ? ORDER BY ts DESC LIMIT 1").get(tokenAddress.toLowerCase()) as AlertRow | undefined) ?? null;
+  }
+
+  /**
+   * その銘柄の買い手の記録を台帳から消す。
+   * スキャムと分かった銘柄の「先回り」は仕掛け人の財布なので、⭐ の計算に入れてはいけない
+   */
+  purgeWalletBuysForToken(tokenAddress: string): number {
+    const addr = tokenAddress.toLowerCase();
+    const touched = (this.db.prepare("SELECT DISTINCT wallet FROM wallet_buys WHERE token_address = ?").all(addr) as { wallet: string }[]).map((r) => r.wallet);
+    const n = Number(this.db.prepare("DELETE FROM wallet_buys WHERE token_address = ?").run(addr).changes);
+    for (const w of touched) {
+      const left = this.db.prepare("SELECT COUNT(*) AS n FROM wallet_buys WHERE wallet = ?").get(w) as { n: number };
+      if (left.n === 0) this.db.prepare("DELETE FROM wallets WHERE address = ?").run(w);
+      else this.refreshWallet(w);
+    }
+    return n;
   }
 
   /* ---------- kv ---------- */
@@ -881,11 +949,12 @@ export class Store {
   listAlertsWithOutcomes(fromTs: number, toTs: number): (AlertRow & Partial<OutcomeRow>)[] {
     return this.db
       .prepare(
-        `SELECT a.*, o.base_price, o.p15m, o.p1h, o.p4h, o.p24h, o.max_gain_pct, o.max_gain_at, o.max_dd_pct, o.done_until, o.hit, o.bust, o.rug
-         FROM alerts a LEFT JOIN alert_outcomes o ON o.alert_id = a.id
+        `SELECT a.*, o.base_price, o.p15m, o.p1h, o.p4h, o.p24h, o.max_gain_pct, o.max_gain_at, o.max_dd_pct, o.done_until, o.hit, o.bust, o.rug,
+                (b.token_address IS NOT NULL) AS blacklisted
+         FROM alerts a LEFT JOIN alert_outcomes o ON o.alert_id = a.id LEFT JOIN blacklist b ON b.token_address = a.token_address
          WHERE a.ts >= ? AND a.ts < ? ORDER BY a.ts ASC`,
       )
-      .all(fromTs, toTs) as unknown as (AlertRow & Partial<OutcomeRow>)[];
+      .all(fromTs, toTs) as unknown as (AlertRow & Partial<OutcomeRow> & { blacklisted?: number })[];
   }
 
   saveDailyReport(r: DailyReportRow): void {
@@ -915,6 +984,7 @@ export class Store {
          JOIN alert_outcomes o ON o.alert_id = a.id
          LEFT JOIN harvests h ON h.alert_id = a.id
          WHERE a.kind = 'revival' AND o.hit = 1 AND COALESCE(o.rug, 0) = 0 AND o.done_until >= 86400000 AND h.alert_id IS NULL
+           AND a.token_address NOT IN (SELECT token_address FROM blacklist)
          ORDER BY a.ts DESC LIMIT ?`,
       )
       .all(limit) as unknown as (AlertRow & { hit: number })[];

@@ -932,3 +932,86 @@ describe("Engine — 取引が途絶えた銘柄をヨコヨコ監視から外�
     expect(engine.rangeWatchlistDetailed(NOW).list).toHaveLength(1);
   });
 });
+
+describe("Engine — /scam: 利用者の手動スキャム指定", () => {
+  function seedCalled(store: Store, symbol: string, score = 12) {
+    const addr = `0xpair_${symbol.toLowerCase()}`;
+    const tok = `0xtok_${symbol.toLowerCase()}`;
+    const mk = (mc: number) => {
+      const p = makePair({ address: addr, token: tok, symbol, ageHours: 30, price: mc / 1e9, liq: 40_000, volH1: 20_000, volH24: 200_000, buysH1: 80, sellsH1: 60 });
+      p.marketCap = mc;
+      p.fdv = mc;
+      return p;
+    };
+    store.upsertPair(mk(600_000), "test", NOW - 29 * H);
+    for (let t = 10 * H; t > 0; t -= 60_000) store.insertSnapshot(mk(t % 120_000 === 0 ? 145_000 : 155_000), NOW - t);
+    store.insertAlert({
+      kind: "revival", token_address: tok, pair_address: addr, ts: NOW - 3 * H, level: 1, price_usd: 0.00015, symbol, summary: "t",
+      scam_score: score, scam_reasons: score > 0 ? "流動性が時価総額の 4.9% と薄い" : "", suppressed: 0, mc_usd: 150_000, trigger: "fast", vol_h1: 20_000, buys_h1: 80, sells_h1: 60, age_hours: 27,
+    });
+    store.recordWalletBuys([
+      { wallet: "0xbundler1", token_address: tok, pair_address: addr, alert_id: 1, symbol, ts: NOW - 4 * H, block: 1, quote_amount: 2, tx_hash: `0xh_${symbol}_1` },
+      { wallet: "0xshared", token_address: tok, pair_address: addr, alert_id: 1, symbol, ts: NOW - 4 * H, block: 2, quote_amount: 1, tx_hash: `0xh_${symbol}_2` },
+    ]);
+    return { addr, tok };
+  }
+
+  it("登録すると一覧から消え、通知も止まり、フィルタが付けていた点数が残る", async () => {
+    const { store, engine, dex, sent } = setup();
+    const { addr, tok } = seedCalled(store, "WOLF", 12);
+    expect(engine.rangeWatchlistDetailed(NOW).list.map((w) => w.row.base_symbol)).toEqual(["WOLF"]);
+
+    const r = await engine.markScam(tok, "バンドル");
+    expect(r.ok).toBe(true);
+    if (!r.ok) return;
+    expect(r.symbol).toBe("WOLF");
+    expect(r.alertScore).toBe(12); // フィルタは 12 点で通していた＝判定の穴として記録
+    expect(store.listBlacklist()[0]!.note).toBe("バンドル");
+
+    const w = engine.rangeWatchlistDetailed(NOW);
+    expect(w.list).toHaveLength(0);
+    expect(w.excludedManual).toBe(1);
+    expect(engine.rangeDiagnosis(tok, NOW)!.manual).toBe(true);
+
+    // 上抜けても鳴らず、止めた記録に理由が残る
+    const broke = makePair({ address: addr, token: tok, symbol: "WOLF", ageHours: 30, price: 0.00018, liq: 40_000, volH1: 60_000, volH24: 300_000, buysH1: 120, sellsH1: 60, changeH1: 25, changeM5: 30 });
+    broke.marketCap = 180_000;
+    broke.fdv = 180_000;
+    dex.set(broke);
+    store.setTier(addr, "dormant", NOW - H);
+    await engine.refreshTier("dormant", 5);
+    expect(sent.join("\n")).not.toContain("$WOLF");
+    const sup = store.recentSuppressed(5).find((a) => a.symbol === "WOLF")!;
+    expect(sup).toBeDefined();
+    expect(sup.scam_score).toBe(100);
+    expect(sup.scam_reasons).toContain("/scam");
+  });
+
+  it("台帳からその銘柄の買い手を消す。他銘柄でも入っていた財布は残る", async () => {
+    const { store, engine } = setup();
+    const { tok } = seedCalled(store, "WOOD", 0);
+    // 0xshared は本物の別銘柄でも早期に入っていた
+    store.recordWalletBuys([{ wallet: "0xshared", token_address: "0xtok_legit", pair_address: "0xpair_legit", alert_id: 2, symbol: "LEGIT", ts: NOW - 5 * H, block: 3, quote_amount: 1, tx_hash: "0xh_legit" }]);
+    expect(store.getWallet("0xshared")!.hits).toBe(2);
+    const r = await engine.markScam(tok, "");
+    expect(r.ok && r.purged).toBe(2);
+    expect(store.getWallet("0xbundler1")).toBeNull();
+    expect(store.getWallet("0xshared")!.hits).toBe(1); // WOOD ぶんだけ減る
+  });
+
+  it("取り消せる", async () => {
+    const { store, engine } = setup();
+    const { tok } = seedCalled(store, "OOPS");
+    await engine.markScam(tok, "");
+    expect(engine.unmarkScam(tok)).toBe(true);
+    expect(store.isBlacklisted(tok)).toBe(false);
+    expect(engine.rangeWatchlistDetailed(NOW).list.map((w) => w.row.base_symbol)).toEqual(["OOPS"]);
+    expect(engine.unmarkScam(tok)).toBe(false);
+  });
+
+  it("知らないアドレスは理由を返す", async () => {
+    const { engine } = setup();
+    const r = await engine.markScam("0x0000000000000000000000000000000000000abc", "");
+    expect(r.ok).toBe(false);
+  });
+});

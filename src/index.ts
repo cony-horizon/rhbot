@@ -22,6 +22,9 @@ const COMMANDS = [
   { command: "wallet", description: "ウォレットの買い履歴" },
   { command: "harvest", description: "指定銘柄の急騰前の買い手を今すぐ集めて印を付ける" },
   { command: "why", description: "指定アドレスのリスクを採点する" },
+  { command: "scam", description: "この銘柄はスキャム、と手動で指定（以後 通知も一覧も止める）" },
+  { command: "unscam", description: "スキャム指定を取り消す" },
+  { command: "blacklist", description: "手動でスキャム指定した銘柄の一覧" },
   { command: "watch", description: "アドレスを手動で監視に追加" },
   { command: "unwatch", description: "監視から外す" },
   { command: "list", description: "手動監視中のペア一覧" },
@@ -216,6 +219,7 @@ async function main(): Promise<void> {
             if (d.currentMc !== null && !d.mcOk) {
               lines.push(`❌ いまの時価総額が ${fmtUsd(cfg.rangeMinMcUsd)} 未満 → 死んだ銘柄として監視から外す（動きがあれば急変レーンが拾う）`);
             }
+            if (d.manual) lines.push("🚷 利用者がスキャムと指定（/scam）→ 一覧・通知とも対象外");
             if (!d.liqOk) lines.push(`❌ いまの流動性が通知の下限 ${fmtUsd(cfg.minLiquidityUsd)} 未満 → 抜かれている`);
             if (d.idleMs === null) lines.push("❌ 取引があった記録がない");
             else if (!d.idleOk) lines.push(`❌ 取引が ${fmtAge(d.idleMs)} 以上途絶えている（${cfg.rangeMaxIdleHours}h で監視から外す）`);
@@ -235,7 +239,8 @@ async function main(): Promise<void> {
               for (const w of d.windows) lines.push(`　${String(w.hours).padStart(2)}h 窓: ${escapeHtml(w.why)}`);
             }
             lines.push("");
-            if (d.primed) lines.push("✅ 監視に入っていて、上抜けを待っている状態です");
+            if (d.manual) lines.push("🚷 手動でスキャム指定済み。取り消すなら /unscam");
+            else if (d.primed) lines.push("✅ 監視に入っていて、上抜けを待っている状態です");
             else if (!d.inCandidates) lines.push(`❌ 監視に入っていません。全盛期が門に届いていないため。門を下げるなら .env の REIGNITE_MIN_PEAK_MC_USD`);
             else if (!d.mcOk) lines.push(`❌ 監視から外しています。いまの時価総額が小さすぎるため（RANGE_MIN_MC_USD）`);
             else if (!d.liqOk) lines.push(`❌ 監視から外しています。流動性が抜かれているため`);
@@ -246,9 +251,12 @@ async function main(): Promise<void> {
             return lines.join("\n");
           }
           const n = Math.min(30, Number(args[0]) || 15);
-          const { list: all, excludedScam, excludedLiq, excludedIdle } = engine.rangeWatchlistDetailed();
-          const excluded = excludedScam + excludedLiq + excludedIdle;
-          const excludedNote = excluded > 0 ? `\n🚫 帯は組んでいるが除外: ${excluded} 件（流動性抜き ${excludedLiq} / 取引停止 ${excludedIdle} / 作られた出来高 ${excludedScam}）` : "";
+          const { list: all, excludedScam, excludedLiq, excludedIdle, excludedManual } = engine.rangeWatchlistDetailed();
+          const excluded = excludedScam + excludedLiq + excludedIdle + excludedManual;
+          const excludedNote =
+            excluded > 0
+              ? `\n🚫 帯は組んでいるが除外: ${excluded} 件（流動性抜き ${excludedLiq} / 取引停止 ${excludedIdle} / 作られた出来高 ${excludedScam}${excludedManual > 0 ? ` / 手動指定 ${excludedManual}` : ""}）`
+              : "";
           if (all.length === 0) {
             return (
               "いまヨコヨコと判定できる銘柄はありません。\n" +
@@ -268,7 +276,7 @@ async function main(): Promise<void> {
             head +
             "\n\n" +
             rows.map(formatRangeWatch).join("\n\n") +
-            "\n\n🔔 = 条件到達 / 🟠 あと 5% / 🟡 あと 15% / ⚪ それ以上"
+            "\n\n🔔 = 条件到達 / 🟠 あと 5% / 🟡 あと 15% / ⚪ それ以上\nスキャムだと思う行があれば /scam &lt;アドレス&gt; で外せます"
           );
         }
         case "harvest": {
@@ -298,6 +306,51 @@ async function main(): Promise<void> {
           }
           lines.push("", `/smart で一覧、/wallet &lt;アドレス&gt; で履歴。他の勝ち銘柄でも早期に入っていれば ⭐ に昇格します`);
           return lines.join("\n");
+        }
+        case "scam": {
+          const addr = args[0];
+          if (!addr || !/^0x[0-9a-fA-F]{40,64}$/.test(addr)) return "使い方: /scam &lt;トークン or ペアアドレス&gt; [メモ]";
+          const note = args.slice(1).join(" ").slice(0, 120);
+          const r = await engine.markScam(addr, note);
+          if (!r.ok) return `❌ ${escapeHtml(r.reason)}`;
+          const lines = [`🚷 <b>$${escapeHtml(r.symbol)}</b> をスキャムとして登録しました`, "以後は通知せず、/ranges にも出しません。成績では勝ちに数えません。"];
+          if (r.purged > 0) lines.push(`台帳からこの銘柄の買い手 ${r.purged} 件を消しました（仕掛け人の財布を ⭐ に混ぜないため）`);
+          lines.push("");
+          if (r.alertScore === null) {
+            lines.push("この銘柄に通知の記録はありません。");
+          } else {
+            const passed = r.alertScore < cfg.scamScoreThreshold;
+            lines.push(`通知時にフィルタが付けていたリスク: <b>${r.alertScore}/100</b> ${passed ? "← 通していた。判定の穴" : "← 止めていた"}`);
+            if (r.alertReasons) for (const l of r.alertReasons.split("\n")) lines.push(`　・${escapeHtml(l)}`);
+            else lines.push("　引っかかった点はありませんでした");
+          }
+          if (r.current) {
+            lines.push("", `いまの状態でのリスク: ${r.current.score}/100`);
+            for (const sig of r.current.signals) lines.push(`　・${escapeHtml(sig.label)}`);
+            lines.push(`　厚み ${r.current.breadth.points}/3 — 取引 ${r.current.breadth.txns} 件 / 平均 ${fmtUsd(r.current.breadth.avgTradeUsd)} / 買い ${Math.round(r.current.breadth.buyShare * 100)}%`);
+          }
+          lines.push("", "取り消すなら /unscam " + escapeHtml(addr));
+          return lines.join("\n");
+        }
+        case "unscam": {
+          const addr = args[0];
+          if (!addr || !/^0x[0-9a-fA-F]{40,64}$/.test(addr)) return "使い方: /unscam &lt;アドレス&gt;";
+          return engine.unmarkScam(addr) ? "スキャム指定を取り消しました" : "この銘柄は指定されていません";
+        }
+        case "blacklist": {
+          const rows = store.listBlacklist(30);
+          if (rows.length === 0) return "手動でスキャム指定した銘柄はまだありません。/scam &lt;アドレス&gt; で登録できます";
+          const passed = rows.filter((b) => b.alert_score !== null && b.alert_score < cfg.scamScoreThreshold).length;
+          return (
+            `<b>🚷 手動スキャム指定 ${rows.length} 件</b>（うちフィルタが通していた ${passed} 件）\n` +
+            rows
+              .map((b) => {
+                const when = new Date(b.ts + 9 * 3_600_000).toISOString().slice(5, 16).replace("T", " ");
+                const sc = b.alert_score === null ? "通知なし" : `リスク ${b.alert_score}`;
+                return `・${when} <b>$${escapeHtml(b.symbol)}</b> ${sc}${b.note ? ` — ${escapeHtml(b.note)}` : ""}\n　<code>${escapeHtml(b.token_address)}</code>`;
+              })
+              .join("\n")
+          );
         }
         case "filtered": {
           const n = Math.min(20, Number(args[0]) || 10);

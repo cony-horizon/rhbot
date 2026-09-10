@@ -409,3 +409,34 @@ describe("ラグを勝ちに数えない", () => {
     store.close();
   });
 });
+
+describe("手動スキャム指定と成績", () => {
+  it("指定した銘柄の的中は実質に数えず、レポートに『フィルタが通していた』と出る", () => {
+    const store = new Store(":memory:");
+    const base = NOW - 10 * H;
+    seed(store, { symbol: "WOLF", trigger: "fast", ts: base, path: [[0, 1], [60, 1.6], [240, 1.8]], score: 12 });
+    seed(store, { symbol: "OK", trigger: "fast", ts: base + M, path: [[0, 1], [60, 1.5], [240, 1.6]] });
+    computeOutcomes(store, cfg, NOW);
+    store.addBlacklist({ token_address: "0xtok_wolf", symbol: "WOLF", ts: NOW - H, note: "バンドル", alert_score: 12, alert_reasons: "流動性が時価総額の 4.9% と薄い" });
+    const { text, stats } = buildDailyReport(store, cfg, NOW);
+    expect(stats.hits).toBe(1); // WOLF は勝ちに数えない
+    expect(text).toContain("的中 100% → <b>実質 50%</b>");
+    expect(text).toContain("🚷 手動でスキャム指定</b> 1 件（うちフィルタが通していた 1 件）");
+    expect(text).toContain("$WOLF</b> 通知時リスク 12");
+    expect(text).toContain("流動性が時価総額の 4.9% と薄い");
+    expect(text).toContain("（バンドル）");
+    const good = text.split("良かったコール")[1]!.split("\n\n")[0]!;
+    expect(good).not.toContain("$WOLF");
+    store.close();
+  });
+
+  it("自動収穫の対象からも外れる", () => {
+    const store = new Store(":memory:");
+    const w = seed(store, { symbol: "WOLF", trigger: "fast", ts: NOW - 30 * H, path: [[0, 1], [60, 1.6], [240, 1.8], [1500, 1.7]] });
+    computeOutcomes(store, cfg, NOW);
+    expect(store.listAlertsToHarvest(10).map((a) => a.id)).toContain(w.id);
+    store.addBlacklist({ token_address: "0xtok_wolf", symbol: "WOLF", ts: NOW, note: "", alert_score: null, alert_reasons: "" });
+    expect(store.listAlertsToHarvest(10)).toHaveLength(0);
+    store.close();
+  });
+});

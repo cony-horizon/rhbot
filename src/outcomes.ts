@@ -88,11 +88,11 @@ export function computeOutcomes(store: Store, cfg: Config, now: number): number 
 /*                              日次レポート                            */
 /* ------------------------------------------------------------------ */
 
-export type Judged = AlertRow & Partial<OutcomeRow>;
+export type Judged = AlertRow & Partial<OutcomeRow> & { blacklisted?: number };
 
-/** +30% を付けたが、その後ラグった銘柄は勝ちに数えない */
+/** +30% を付けたが、その後ラグった銘柄・利用者がスキャムと指定した銘柄は勝ちに数えない */
 export function isCleanHit(j: Judged): boolean {
-  return j.hit === 1 && j.rug !== 1;
+  return j.hit === 1 && j.rug !== 1 && !j.blacklisted;
 }
 export function isRug(j: Judged): boolean {
   return j.rug === 1;
@@ -305,6 +305,7 @@ function describeCall(j: Judged): string {
     p4 !== null ? `4h ${fmtPct(p4)}` : "",
     dd !== null && dd <= -30 ? `最大DD ${fmtPct(dd)}` : "",
     isRug(j) ? "💀ラグ" : "",
+    j.blacklisted ? "🚷手動スキャム" : "",
   ].filter(Boolean);
   return parts.join(" ｜ ");
 }
@@ -318,7 +319,7 @@ export function buildDailyReport(store: Store, cfg: Config, now: number): { text
   const hitWindow = cfg.outcomeHitWindowHours * HOUR_MS;
   const to = now - hitWindow;
   const from = to - 24 * HOUR_MS;
-  const all = store.listAlertsWithOutcomes(from, to);
+  const all: Judged[] = store.listAlertsWithOutcomes(from, to);
   const judged = all.filter((a) => a.hit === 0 || a.hit === 1);
   const sent = judged.filter((a) => a.suppressed === 0);
   const blocked = judged.filter((a) => a.suppressed === 1);
@@ -388,10 +389,10 @@ export function buildDailyReport(store: Store, cfg: Config, now: number): { text
   // ラグった銘柄は「良かった」に入れない。+1851% の後に -100% は勝ちではないし、
   // 同じ銘柄が良かった側と悪かった側の両方に並ぶことになる
   const ranked = uniqueByToken(
-    [...sent].filter((a) => a.max_gain_pct !== null && a.max_gain_pct !== undefined && !isRug(a)).sort((a, b) => (b.max_gain_pct ?? 0) - (a.max_gain_pct ?? 0)),
+    [...sent].filter((a) => a.max_gain_pct !== null && a.max_gain_pct !== undefined && !isRug(a) && !a.blacklisted).sort((a, b) => (b.max_gain_pct ?? 0) - (a.max_gain_pct ?? 0)),
   );
   if (ranked.length > 0) {
-    lines.push("", "<b>🏆 良かったコール</b>（ラグ除く）");
+    lines.push("", "<b>🏆 良かったコール</b>（ラグ・手動スキャム除く）");
     for (const j of ranked.slice(0, 3)) lines.push(`・${describeCall(j)}`);
     const worst = uniqueByToken([...sent].sort((a, b) => (a.p4h ?? a.max_gain_pct ?? 0) - (b.p4h ?? b.max_gain_pct ?? 0))).filter((j) => (j.p4h ?? j.max_gain_pct ?? 0) < 0).slice(0, 3);
     if (worst.length > 0) {
@@ -429,6 +430,22 @@ export function buildDailyReport(store: Store, cfg: Config, now: number): { text
         ? `🚫 止めた ${blocked.length} 件のうち ${blockedRugHits} 件は +${cfg.outcomeHitPct}% の後ラグ、残りは伸びず（フィルタは妥当）`
         : `🚫 止めた ${blocked.length} 件はいずれも伸びませんでした（フィルタは妥当）`,
     );
+  }
+
+  // 利用者が手動でスキャムと指定した銘柄。フィルタが何点を付けて通していたかが、判定の穴を示す
+  const flagged = store.listBlacklistedSince(from);
+  if (flagged.length > 0) {
+    const passed = flagged.filter((b) => b.alert_score !== null && b.alert_score < cfg.scamScoreThreshold);
+    lines.push("", `<b>🚷 手動でスキャム指定</b> ${flagged.length} 件（うちフィルタが通していた ${passed.length} 件）`);
+    for (const b of flagged.slice(0, 5)) {
+      const sc = b.alert_score === null ? "通知なし" : `通知時リスク ${b.alert_score}`;
+      const why = b.alert_reasons ? b.alert_reasons.split("\n").slice(0, 2).join(" / ") : "引っかかった点なし";
+      lines.push(`・<b>$${escapeHtml(b.symbol)}</b> ${sc} — ${escapeHtml(why)}${b.note ? `（${escapeHtml(b.note)}）` : ""}`);
+    }
+    if (passed.length > 0) {
+      const avg = Math.round(passed.reduce((n, b) => n + (b.alert_score ?? 0), 0) / passed.length);
+      lines.push(`→ 通していた ${passed.length} 件の平均リスクは ${avg}。理由の欄が「なし」なら、いまの指標では見えない型です。CA と特徴を送ってください`);
+    }
   }
 
   // 傾向と改善案。通知したものだけで見る。

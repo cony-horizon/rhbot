@@ -47,6 +47,8 @@ interface RangeGate {
   idleMs: number | null;
   idleOk: boolean;
   scam: ScamAssessment | null;
+  /** 利用者が /scam で指定した */
+  manual: boolean;
   blocked: boolean;
 }
 
@@ -68,6 +70,8 @@ export interface RangeDiagnosis {
   mcOk: boolean;
   /** いまの流動性が通知の下限以上か（抜かれていないか） */
   liqOk: boolean;
+  /** 利用者が /scam で指定した */
+  manual: boolean;
   /** 取引が途絶えてからの時間（観測ベース）。null は取引の記録なし */
   idleMs: number | null;
   /** 途絶えが RANGE_MAX_IDLE_HOURS 未満か */
@@ -396,15 +400,16 @@ export class Engine {
    */
   private rangeGate(row: PairRow, now: number): RangeGate {
     const snap = this.store.latestSnapshot(row.pair_address);
-    if (!snap) return { snap: null, liqOk: false, idleMs: null, idleOk: false, scam: null, blocked: true };
+    const manual = this.store.isBlacklisted(row.base_address);
+    if (!snap) return { snap: null, liqOk: false, idleMs: null, idleOk: false, scam: null, manual, blocked: true };
     const liqOk = snap.liquidity_usd >= this.cfg.minLiquidityUsd;
     // 取引が途絶えた銘柄の平坦な線は帯ではない（$PUMPED: 09:00 に売り抜けて以降ずっと無取引）
     const lastTrade = this.store.lastTradeSnapshotTs(row.pair_address);
     const idleMs = lastTrade === null ? null : now - lastTrade;
     const idleOk = idleMs !== null && idleMs < this.cfg.rangeMaxIdleHours * HOUR_MS;
     const scam = assessScam(this.snapshotAsPair(row, snap), this.cfg, now, this.scamHistory(row.pair_address, now));
-    const blocked = !liqOk || !idleOk || (this.cfg.scamFilterEnabled && scam.score >= this.cfg.scamScoreThreshold);
-    return { snap, liqOk, idleMs, idleOk, scam, blocked };
+    const blocked = manual || !liqOk || !idleOk || (this.cfg.scamFilterEnabled && scam.score >= this.cfg.scamScoreThreshold);
+    return { snap, liqOk, idleMs, idleOk, scam, manual, blocked };
   }
 
   /**
@@ -419,11 +424,12 @@ export class Engine {
     return this.rangeWatchlistDetailed(now, limit).list;
   }
 
-  rangeWatchlistDetailed(now = this.now(), limit = 200): { list: RangeWatch[]; excludedScam: number; excludedLiq: number; excludedIdle: number } {
+  rangeWatchlistDetailed(now = this.now(), limit = 200): { list: RangeWatch[]; excludedScam: number; excludedLiq: number; excludedIdle: number; excludedManual: number } {
     const out: RangeWatch[] = [];
     let excludedScam = 0;
     let excludedLiq = 0;
     let excludedIdle = 0;
+    let excludedManual = 0;
     for (const row of this.store.listRangeCandidates(this.cfg.reigniteMinPeakMcUsd, limit)) {
       const range = this.mcRangeOf(row.pair_address, now);
       if (!range) continue;
@@ -435,7 +441,8 @@ export class Engine {
       // 流動性を抜かれた銘柄・機械的に回されている銘柄は、帯を組んでいても一覧に出さない
       const gate = this.rangeGate(row, now);
       if (gate.blocked) {
-        if (!gate.liqOk) excludedLiq++;
+        if (gate.manual) excludedManual++;
+        else if (!gate.liqOk) excludedLiq++;
         else if (!gate.idleOk) excludedIdle++;
         else excludedScam++;
         continue;
@@ -463,7 +470,7 @@ export class Engine {
       });
     }
     // 抜けそうな順。待っているものを上に出す
-    return { list: out.sort((a, b) => a.toBreakoutPct - b.toBreakoutPct), excludedScam, excludedLiq, excludedIdle };
+    return { list: out.sort((a, b) => a.toBreakoutPct - b.toBreakoutPct), excludedScam, excludedLiq, excludedIdle, excludedManual };
   }
 
   /**
@@ -557,8 +564,14 @@ export class Engine {
 
     // 作られた出来高で釣る銘柄を落とす。検知そのものは残し、通知だけを止める
     // （履歴に残しておかないと、フィルタが効きすぎていても利用者が気づけない）。
-    const scam = assessScam(p, this.cfg, now, this.scamHistory(p.pairAddress, now));
-    const blocked = this.cfg.scamFilterEnabled && scam.score >= this.cfg.scamScoreThreshold;
+    let scam = assessScam(p, this.cfg, now, this.scamHistory(p.pairAddress, now));
+    let blocked = this.cfg.scamFilterEnabled && scam.score >= this.cfg.scamScoreThreshold;
+    // 利用者が手動でスキャムと指定した銘柄は点数に関係なく止める。
+    // 履歴には残す（その後どうなったかを追えば、指定が正しかったかも分かる）
+    if (this.store.isBlacklisted(token)) {
+      scam = { ...scam, score: 100, signals: [{ id: "manual", points: 100, label: "利用者がスキャムと指定（/scam）" }, ...scam.signals] };
+      blocked = true;
+    }
 
     // 同時に立った場合は復活を優先する。
     // 「ヨコヨコから動き出した」ほうが、出来高が段階を超えたことより読み手に有用。
@@ -765,6 +778,7 @@ export class Engine {
       currentMc,
       mcOk,
       liqOk: gate.liqOk,
+      manual: gate.manual,
       idleMs: gate.idleMs,
       idleOk: gate.idleOk,
       scam: gate.scam,
@@ -776,6 +790,51 @@ export class Engine {
       toBreakoutPct: triggerMc !== null && currentMc !== null && currentMc > 0 ? (triggerMc / currentMc - 1) * 100 : null,
       primed: inCandidates && peakOk && mcOk && !gate.blocked && cooled && range !== null,
     };
+  }
+
+  /**
+   * 利用者が「これはスキャム」と指定する（/scam）。
+   * 以後は通知も一覧も止め、成績では勝ちに数えず、台帳からその銘柄の買い手を消す。
+   * 指定時点でフィルタが付けていた点数を一緒に残す。低い点で通していたなら、それが判定の穴。
+   */
+  async markScam(address: string, note: string): Promise<{ ok: false; reason: string } | { ok: true; symbol: string; token: string; alertScore: number | null; alertReasons: string; purged: number; current: ScamAssessment | null }> {
+    let rows = this.store.listPairsByToken(address);
+    if (rows.length === 0) {
+      const one = this.store.getPair(address);
+      if (one) rows = [one];
+    }
+    if (rows.length === 0) {
+      await this.watch(address);
+      rows = this.store.listPairsByToken(address);
+      if (rows.length === 0) {
+        const one = this.store.getPair(address);
+        if (one) rows = [one];
+      }
+    }
+    const row = rows.sort((a, b) => b.last_liquidity_usd - a.last_liquidity_usd)[0];
+    if (!row) return { ok: false, reason: `DexScreener に ${address} のペアが見つかりませんでした` };
+
+    const token = row.base_address.toLowerCase();
+    const last = this.store.latestAlertForToken(token);
+    const now = this.now();
+    this.store.addBlacklist({
+      token_address: token,
+      symbol: row.base_symbol,
+      ts: now,
+      note,
+      alert_score: last?.scam_score ?? null,
+      alert_reasons: last?.scam_reasons ?? "",
+    });
+    const purged = this.store.purgeWalletBuysForToken(token);
+    const snap = this.store.latestSnapshot(row.pair_address);
+    const current = snap ? assessScam(this.snapshotAsPair(row, snap), this.cfg, now, this.scamHistory(row.pair_address, now)) : null;
+    return { ok: true, symbol: row.base_symbol, token, alertScore: last?.scam_score ?? null, alertReasons: last?.scam_reasons ?? "", purged, current };
+  }
+
+  unmarkScam(address: string): boolean {
+    const rows = this.store.listPairsByToken(address);
+    const token = rows[0]?.base_address ?? this.store.getPair(address)?.base_address ?? address;
+    return this.store.removeBlacklist(token);
   }
 
   /* ---------------- メンテナンス ---------------- */
