@@ -41,6 +41,8 @@ export interface Config {
   quoteSymbols: string[];
 
   newLaunchEnabled: boolean;
+  /** on = 通知する / shadow = 記録だけして通知しない / off = 評価もしない */
+  newLaunchMode: "on" | "shadow" | "off";
   newMaxAgeHours: number;
   newVolH1TiersUsd: number[];
   newMinBuysH1: number;
@@ -145,6 +147,12 @@ function num(env: Env, key: string, def: number): number {
   return n;
 }
 
+function launchMode(env: NodeJS.ProcessEnv | Record<string, string | undefined>): "on" | "shadow" | "off" {
+  if (!bool(env, "NEW_LAUNCH_ENABLED", true)) return "off";
+  const m = (env.NEW_LAUNCH_MODE ?? "shadow").trim().toLowerCase();
+  return m === "on" ? "on" : m === "off" ? "off" : "shadow";
+}
+
 function bool(env: Env, key: string, def: boolean): boolean {
   const v = env[key];
   if (v === undefined || v.trim() === "") return def;
@@ -247,6 +255,9 @@ export function buildConfig(env: Env, strict = true): Config {
     quoteSymbols: list(env, "QUOTE_SYMBOLS", []).map((s) => s.toUpperCase()),
 
     newLaunchEnabled: bool(env, "NEW_LAUNCH_ENABLED", true),
+    // 新規ローンチはラグ率 80%（$1M 以上でも）だった。通知はやめるが、記録と成績集計は続けて
+    // ラグ率の下がる型が見えたら戻せるようにする。NEW_LAUNCH_ENABLED=false なら off
+    newLaunchMode: launchMode(env),
     newMaxAgeHours: num(env, "NEW_MAX_AGE_HOURS", 12),
     newVolH1TiersUsd: numList(env, "NEW_VOL_H1_TIERS_USD", [25_000, 100_000, 500_000]),
     newMinBuysH1: num(env, "NEW_MIN_BUYS_H1", 15),

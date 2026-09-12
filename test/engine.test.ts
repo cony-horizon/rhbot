@@ -1015,3 +1015,54 @@ describe("Engine — /scam: 利用者の手動スキャム指定", () => {
     expect(r.ok).toBe(false);
   });
 });
+
+
+describe("Engine — 新規ローンチの影運転（NEW_LAUNCH_MODE=shadow）", () => {
+  it("通知せず、記録だけ残す。止めたものとは区別される", async () => {
+    const { dex, sent, engine, store } = setup({ NEW_LAUNCH_MODE: "shadow" });
+    dex.searchResults = [makePair({ ageHours: 1, volH1: 60_000 })];
+    await engine.discover();
+    expect(sent).toHaveLength(0);
+    const rows = store.listAlertsWithOutcomes(NOW - H, NOW + H);
+    expect(rows).toHaveLength(1);
+    expect(rows[0]!.kind).toBe("new_launch");
+    expect(rows[0]!.suppressed).toBe(1);
+    expect(rows[0]!.shadow).toBe(1);
+    expect(rows[0]!.scam_score).toBeLessThan(50); // スキャム判定で止めたのではない
+    // /filtered（止めたもの）には出ない
+    expect(store.recentSuppressed(5).filter((a) => a.shadow !== 1)).toHaveLength(0);
+  });
+
+  it("復活系は影運転の影響を受けない", async () => {
+    const { dex, sent, engine, setNow } = setup({ NEW_LAUNCH_MODE: "shadow" });
+    const p = makePair({ ageHours: 40, volH1: 50, volH24: 1_000, price: 0.001, liq: 15_000 });
+    p.marketCap = 300_000;
+    p.fdv = 300_000;
+    dex.searchResults = [p];
+    await engine.discover();
+    setNow(NOW + 90 * 60_000);
+    const cur = dex.pairs.get(p.pairAddress.toLowerCase())!;
+    cur.priceUsd = "0.0016";
+    cur.priceChange.h1 = 60;
+    cur.priceChange.m5 = 25;
+    cur.volume.h1 = 15_000;
+    cur.volume.h24 = 16_000;
+    await engine.refreshTier("dormant", 1);
+    expect(sent).toHaveLength(1);
+    expect(sent[0]).toMatch(/急変|静穏から復活/);
+  });
+
+  it("off なら評価もしない", async () => {
+    const { dex, sent, engine, store } = setup({ NEW_LAUNCH_MODE: "off" });
+    dex.searchResults = [makePair({ ageHours: 1, volH1: 60_000 })];
+    await engine.discover();
+    expect(sent).toHaveLength(0);
+    expect(store.listAlertsWithOutcomes(NOW - H, NOW + H)).toHaveLength(0);
+  });
+
+  it("NEW_LAUNCH_ENABLED=false は off と同じ（後方互換）", () => {
+    expect(makeConfig({ NEW_LAUNCH_ENABLED: "false", NEW_LAUNCH_MODE: "on" }).newLaunchMode).toBe("off");
+    expect(makeConfig({ NEW_LAUNCH_MODE: "" }).newLaunchMode).toBe("shadow");
+    expect(makeConfig({}).newLaunchMode).toBe("on"); // helpers が on を渡している
+  });
+});

@@ -10,7 +10,7 @@ import type { Detection, DetectorContext } from "./types.js";
  * 1h 出来高が段階しきい値を超えるたびに 1 回通知する。
  */
 export function detectNewLaunch(ctx: DetectorContext, cfg: Config): Detection | null {
-  if (!cfg.newLaunchEnabled) return null;
+  if (!cfg.newLaunchEnabled || cfg.newLaunchMode === "off") return null;
   const { pair, ageMs, lastAlert } = ctx;
   if (ageMs === null || ageMs < 0) return null;
   if (ageMs >= cfg.newMaxAgeHours * HOUR_MS) return null;

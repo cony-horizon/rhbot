@@ -10,6 +10,9 @@ export function makeConfig(overrides: Record<string, string> = {}): Config {
       TELEGRAM_BOT_TOKEN: "x",
       TELEGRAM_CHAT_ID: "1",
       RPC_URL: "",
+      // 既定は影運転（通知しない）。検知の試験は通知される前提で書いてあるので、試験では on にする。
+      // 影運転そのものの試験は明示的に shadow を渡す
+      NEW_LAUNCH_MODE: "on",
       ...overrides,
     },
     true,

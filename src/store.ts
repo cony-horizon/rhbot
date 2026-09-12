@@ -67,6 +67,8 @@ export interface AlertRow {
   scam_reasons: string;
   /** 1 ならスコア超過で通知を止めたもの */
   suppressed: number;
+  /** 影運転: 通知しない経路の記録。止めたものとは区別する */
+  shadow: number;
   /** 通知時点の時価総額 */
   mc_usd: number;
   /** 成立経路。new / reignite / dormant / breakout / fast */
@@ -225,6 +227,7 @@ CREATE TABLE IF NOT EXISTS alerts (
   scam_score INTEGER NOT NULL DEFAULT 0,
   scam_reasons TEXT NOT NULL DEFAULT '',
   suppressed INTEGER NOT NULL DEFAULT 0,
+  shadow INTEGER NOT NULL DEFAULT 0,
   mc_usd REAL NOT NULL DEFAULT 0,
   trigger TEXT NOT NULL DEFAULT '',
   vol_h1 REAL NOT NULL DEFAULT 0,
@@ -330,6 +333,7 @@ export class Store {
       ["scam_score", "INTEGER NOT NULL DEFAULT 0"],
       ["scam_reasons", "TEXT NOT NULL DEFAULT ''"],
       ["suppressed", "INTEGER NOT NULL DEFAULT 0"],
+      ["shadow", "INTEGER NOT NULL DEFAULT 0"],
       ["mc_usd", "REAL NOT NULL DEFAULT 0"],
       ["trigger", "TEXT NOT NULL DEFAULT ''"],
       ["vol_h1", "REAL NOT NULL DEFAULT 0"],
@@ -834,12 +838,12 @@ export class Store {
     );
   }
 
-  insertAlert(a: Omit<AlertRow, "id">): number {
+  insertAlert(a: Omit<AlertRow, "id" | "shadow"> & { shadow?: number }): number {
     const res = this.db
       .prepare(
-        `INSERT INTO alerts(kind, token_address, pair_address, ts, level, price_usd, symbol, summary, scam_score, scam_reasons, suppressed,
+        `INSERT INTO alerts(kind, token_address, pair_address, ts, level, price_usd, symbol, summary, scam_score, scam_reasons, suppressed, shadow,
                             mc_usd, trigger, vol_h1, buys_h1, sells_h1, age_hours)
-         VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+         VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
       )
       .run(
         a.kind,
@@ -853,6 +857,7 @@ export class Store {
         a.scam_score,
         a.scam_reasons,
         a.suppressed,
+        a.shadow ?? 0,
         a.mc_usd,
         a.trigger,
         a.vol_h1,
@@ -1107,11 +1112,11 @@ export class Store {
 
   /** スキャム判定で止めたもの。フィルタが効きすぎていないか確認するために使う */
   recentSuppressed(limit: number): AlertRow[] {
-    return this.db.prepare("SELECT * FROM alerts WHERE suppressed = 1 ORDER BY ts DESC LIMIT ?").all(limit) as unknown as AlertRow[];
+    return this.db.prepare("SELECT * FROM alerts WHERE suppressed = 1 AND shadow = 0 ORDER BY ts DESC LIMIT ?").all(limit) as unknown as AlertRow[];
   }
 
   countSuppressedSince(sinceTs: number): number {
-    const row = this.db.prepare("SELECT COUNT(*) AS n FROM alerts WHERE suppressed = 1 AND ts >= ?").get(sinceTs) as { n: number };
+    const row = this.db.prepare("SELECT COUNT(*) AS n FROM alerts WHERE suppressed = 1 AND shadow = 0 AND ts >= ?").get(sinceTs) as { n: number };
     return row.n;
   }
 

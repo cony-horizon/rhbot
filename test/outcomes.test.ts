@@ -440,3 +440,41 @@ describe("手動スキャム指定と成績", () => {
     store.close();
   });
 });
+
+
+describe("影運転の成績は別枠で出す", () => {
+  it("👻 の節に経路別の実質とラグ率が出て、止めた側の試算には混ざらない", () => {
+    const store = new Store(":memory:");
+    const base = NOW - 10 * H;
+    seed(store, { symbol: "S1", trigger: "fast", ts: base, path: [[0, 1], [60, 1.5], [240, 1.6]] });
+    // 影運転の新規 4 件: 3 件ラグ、1 件本物
+    const sh = (sym: string, path: [number, number][], i: number) => {
+      const addr = `0xpair_${sym.toLowerCase()}`;
+      const p = makePair({ address: addr, token: `0xtok_${sym.toLowerCase()}`, symbol: sym, price: 1 });
+      store.upsertPair(p, "test", base + i * M);
+      store.insertAlert({
+        kind: "new_launch", token_address: p.baseToken.address, pair_address: addr, ts: base + i * M, level: 1, price_usd: 1, symbol: sym, summary: "t",
+        scam_score: 5, scam_reasons: "", suppressed: 1, shadow: 1, mc_usd: 2_000_000, trigger: "new", vol_h1: 100_000, buys_h1: 60, sells_h1: 40, age_hours: 1,
+      });
+      for (const [min, price] of path) store.insertSnapshot(makePair({ address: addr, token: p.baseToken.address, symbol: sym, price }), base + i * M + min * M);
+    };
+    sh("G1", [[0, 1], [30, 2], [90, 0.001], [240, 0.001]], 1);
+    sh("G2", [[0, 1], [30, 1.8], [90, 0.001], [240, 0.001]], 2);
+    sh("G3", [[0, 1], [30, 1.6], [90, 0.001], [240, 0.001]], 3);
+    sh("G4", [[0, 1], [60, 1.5], [240, 1.6]], 4);
+    computeOutcomes(store, cfg, NOW);
+    const { text, stats } = buildDailyReport(store, cfg, NOW);
+    expect(stats.judged).toBe(1); // 通知は S1 だけ
+    expect(stats.suppressed).toBe(0); // 影運転は「止めた」ではない
+    expect(text).toContain("影運転 4 件");
+    expect(text).toContain("👻 影運転");
+    const sec = text.split("👻 影運転")[1]!.split("\n\n")[0]!;
+    expect(sec).toContain("🚀 新規");
+    expect(sec).toContain("的中 100% → <b>実質 25%</b>（ラグ率 75%）");
+    expect(sec).toContain("通知に戻す段階ではない");
+    // 「止めたが伸びた」やしきい値の試算に影運転は出てこない
+    expect(text).not.toContain("止めたが伸びた");
+    expect(text).not.toContain("しきい値を上げた場合");
+    store.close();
+  });
+});

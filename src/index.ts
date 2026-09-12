@@ -56,7 +56,7 @@ function configText(cfg: Config): string {
   return [
     "<b>検知設定</b>",
     `chain: ${cfg.chainId} | 最低流動性: ${fmtUsd(cfg.minLiquidityUsd)}`,
-    `<b>新規</b> ${cfg.newLaunchEnabled ? "ON" : "OFF"}: 〜${cfg.newMaxAgeHours}h, MC>=${fmtUsd(cfg.newMinMcUsd)}, 1h出来高段階 ${cfg.newVolH1TiersUsd
+    `<b>新規</b> ${cfg.newLaunchMode === "on" ? "ON" : cfg.newLaunchMode === "shadow" ? "👻 影運転（記録のみ）" : "OFF"}: 〜${cfg.newMaxAgeHours}h, MC>=${fmtUsd(cfg.newMinMcUsd)}, 1h出来高段階 ${cfg.newVolH1TiersUsd
       .map((n) => fmtUsd(n))
       .join(" / ")}, 買>=${cfg.newMinBuysH1}`,
     `<b>新規(低MC・試験中)</b> ${cfg.newLowMcEnabled ? "ON" : "OFF"}: MC ${fmtUsd(cfg.newLowMcFloorUsd)}〜${fmtUsd(

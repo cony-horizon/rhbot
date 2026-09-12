@@ -212,7 +212,7 @@ function attributes(a: Judged, cfg: Config): Attr[] {
 
   // 出来高が時価総額の何倍動いたか。低MC レーンのしきい値はここを見て決める。
   // 一件の実例から勘で置くと、また同じ取り逃がしをするため
-  if (a.mc_usd > 0 && a.vol_h1 > 0) {
+  if (a.kind === "new_launch" && a.mc_usd > 0 && a.vol_h1 > 0) {
     const r = a.vol_h1 / a.mc_usd;
     const bucket = r >= 3 ? "3倍以上" : r >= 1 ? "1-3倍" : r >= 0.5 ? "0.5-1倍" : "0.5倍未満";
     out.push({ name: "出来高/MC", bucket, knob: "NEW_LOW_MC_VOL_TO_MC" });
@@ -293,6 +293,29 @@ function insights(judged: Judged[], cfg: Config): Insight[] {
   return out.sort((a, b) => b.weight - a.weight).slice(0, 4);
 }
 
+function groupByTrigger(list: Judged[]): [string, Judged[]][] {
+  const by = new Map<string, Judged[]>();
+  for (const a of list) {
+    const k = triggerOf(a);
+    by.set(k, [...(by.get(k) ?? []), a]);
+  }
+  return [...by.entries()].sort((a, b) => b[1].length - a[1].length);
+}
+
+/** 経路 1 つぶんの 2 行（的中 → 実質、中央値） */
+function triggerLines(k: string, list: Judged[]): string[] {
+  const raw = list.filter((a) => a.hit === 1).length;
+  const clean = list.filter(isCleanHit).length;
+  const rg = list.filter(isRug).length;
+  const mg = median(list.map((a) => a.max_gain_pct ?? 0));
+  const p4 = median(list.filter((a) => a.p4h !== null && a.p4h !== undefined).map((a) => a.p4h as number));
+  const dd = median(list.map((a) => a.max_dd_pct ?? 0));
+  return [
+    `${(TRIGGER_LABEL[k] ?? k).padEnd(10)} ${String(list.length).padStart(2)}件  的中 ${rate(raw, list.length)} → <b>実質 ${rate(clean, list.length)}</b>${rg > 0 ? `（ラグ率 ${rate(rg, list.length)}）` : ""}`,
+    `　中央値: 最大 ${fmtPct(mg)} / 4h後 ${fmtPct(p4)} / DD ${fmtPct(dd)}`,
+  ];
+}
+
 function describeCall(j: Judged): string {
   const t = TRIGGER_LABEL[triggerOf(j)] ?? triggerOf(j);
   const mg = j.max_gain_pct ?? null;
@@ -322,7 +345,9 @@ export function buildDailyReport(store: Store, cfg: Config, now: number): { text
   const all: Judged[] = store.listAlertsWithOutcomes(from, to);
   const judged = all.filter((a) => a.hit === 0 || a.hit === 1);
   const sent = judged.filter((a) => a.suppressed === 0);
-  const blocked = judged.filter((a) => a.suppressed === 1);
+  // 影運転（通知しない経路の記録）は「止めた」とは別。しきい値の試算にも混ぜない
+  const shadowed = judged.filter((a) => a.suppressed === 1 && a.shadow === 1);
+  const blocked = judged.filter((a) => a.suppressed === 1 && a.shadow !== 1);
   const rawHits = sent.filter((a) => a.hit === 1).length;
   const hits = sent.filter(isCleanHit).length;
   const rugs = sent.filter(isRug).length;
@@ -330,7 +355,7 @@ export function buildDailyReport(store: Store, cfg: Config, now: number): { text
     from,
     to,
     total: all.filter((a) => a.suppressed === 0).length,
-    suppressed: all.filter((a) => a.suppressed === 1).length,
+    suppressed: all.filter((a) => a.suppressed === 1 && a.shadow !== 1).length,
     judged: sent.length,
     hits,
     hitRate: sent.length ? hits / sent.length : null,
@@ -340,7 +365,7 @@ export function buildDailyReport(store: Store, cfg: Config, now: number): { text
   const lines: string[] = [
     `📊 <b>日次レポート ${label}</b>`,
     `対象: ${jst(from).label} ${jst(from).hour}時 〜 ${jst(to).label} ${jst(to).hour}時 の通知（結果確定分）`,
-    `通知 ${stats.judged} 件 ｜ 止めた ${blocked.length} 件`,
+    `通知 ${stats.judged} 件 ｜ 止めた ${blocked.length} 件${shadowed.length > 0 ? ` ｜ 影運転 ${shadowed.length} 件` : ""}`,
     `的中 = ${cfg.outcomeHitWindowHours}h 以内に +${cfg.outcomeHitPct}% ｜ ラグ = 24h 内に -${cfg.outcomeRugPct}% ｜ <b>実質</b> = 的中かつラグでない`,
     "",
   ];
@@ -352,25 +377,10 @@ export function buildDailyReport(store: Store, cfg: Config, now: number): { text
 
   // 種別別
   lines.push("<b>種別別の成績</b>");
-  const byTrigger = new Map<string, Judged[]>();
-  for (const a of sent) {
-    const k = triggerOf(a);
-    byTrigger.set(k, [...(byTrigger.get(k) ?? []), a]);
-  }
-  for (const [k, list] of [...byTrigger.entries()].sort((a, b) => b[1].length - a[1].length)) {
-    const raw = list.filter((a) => a.hit === 1).length;
-    const clean = list.filter(isCleanHit).length;
-    const rg = list.filter(isRug).length;
-    const mg = median(list.map((a) => a.max_gain_pct ?? 0));
-    const p4 = median(list.filter((a) => a.p4h !== null && a.p4h !== undefined).map((a) => a.p4h as number));
-    const dd = median(list.map((a) => a.max_dd_pct ?? 0));
-    lines.push(
-      `${(TRIGGER_LABEL[k] ?? k).padEnd(10)} ${String(list.length).padStart(2)}件  的中 ${rate(raw, list.length)} → <b>実質 ${rate(clean, list.length)}</b>${rg > 0 ? `（ラグ率 ${rate(rg, list.length)}）` : ""}`,
-      `　中央値: 最大 ${fmtPct(mg)} / 4h後 ${fmtPct(p4)} / DD ${fmtPct(dd)}`,
-    );
-  }
+  const byTrigger = groupByTrigger(sent);
+  for (const [k, list] of byTrigger) lines.push(...triggerLines(k, list));
   // 主軸の再点火が一度も鳴っていないなら、それ自体が報告すべき事実
-  if (cfg.reigniteEnabled && !byTrigger.has("reignite")) {
+  if (cfg.reigniteEnabled && !byTrigger.some(([k]) => k === "reignite")) {
     lines.push(`${TRIGGER_LABEL.reignite!.padEnd(10)}  0件  — 待機中の銘柄は /ranges で確認`);
   }
   lines.push(
@@ -429,6 +439,19 @@ export function buildDailyReport(store: Store, cfg: Config, now: number): { text
       blockedRugHits > 0
         ? `🚫 止めた ${blocked.length} 件のうち ${blockedRugHits} 件は +${cfg.outcomeHitPct}% の後ラグ、残りは伸びず（フィルタは妥当）`
         : `🚫 止めた ${blocked.length} 件はいずれも伸びませんでした（フィルタは妥当）`,
+    );
+  }
+
+  // 影運転の経路。通知していないが、戻す判断のために成績は出し続ける
+  if (shadowed.length > 0) {
+    lines.push("", `<b>👻 影運転</b>（記録のみ・通知なし）${shadowed.length} 件`);
+    for (const [k, list] of groupByTrigger(shadowed)) lines.push(...triggerLines(k, list));
+    const clean = shadowed.filter(isCleanHit).length;
+    const rg = shadowed.filter(isRug).length;
+    lines.push(
+      rg / shadowed.length >= 0.5
+        ? `→ ラグ率 ${rate(rg, shadowed.length)}。通知に戻す段階ではない`
+        : `→ 実質 ${rate(clean, shadowed.length)} / ラグ率 ${rate(rg, shadowed.length)}。通知側と比べて遜色なければ NEW_LAUNCH_MODE=on で戻せる`,
     );
   }
 

@@ -578,6 +578,8 @@ export class Engine {
     const chosen = candidates.some((c) => c.kind === "revival") ? candidates.filter((c) => c.kind === "revival") : candidates;
 
     for (const d of chosen) {
+      // 影運転の経路は、通知だけ止めて記録と成績集計は続ける
+      const shadow = d.kind === "new_launch" && this.cfg.newLaunchMode === "shadow";
       // 反省に使う属性も一緒に残す。あとから「どういう通知が当たったか」を集計するため
       this.store.insertAlert({
         kind: d.kind,
@@ -590,7 +592,8 @@ export class Engine {
         summary: d.reason,
         scam_score: scam.score,
         scam_reasons: scam.signals.map((sig) => sig.label).join("\n"),
-        suppressed: blocked ? 1 : 0,
+        suppressed: blocked || shadow ? 1 : 0,
+        shadow: shadow ? 1 : 0,
         mc_usd: p.marketCap && p.marketCap > 0 ? p.marketCap : (p.fdv ?? 0),
         trigger: d.display.trigger ?? (d.kind === "new_launch" ? "new" : "dormant"),
         vol_h1: d.metrics.volH1,
@@ -603,6 +606,10 @@ export class Engine {
       if (blocked) {
         this.stats.alertsSuppressed++;
         log.info(`FILTERED ${d.kind} $${p.baseToken.symbol} — スキャム判定 ${scam.score}/100`);
+        continue;
+      }
+      if (shadow) {
+        log.info(`[shadow] ${d.kind} $${p.baseToken.symbol}: ${d.reason}`);
         continue;
       }
       if (this.isMuted()) {
